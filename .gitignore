@@ -1,0 +1,34 @@
+# Python environments, build outputs, and caches
+.venv/
+.tools/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+
+# Generated datasets and Spark artifacts
+data/
+artifacts/
+spark-warehouse/
+metastore_db/
+derby.log
+*.log
+.DS_Store
+
+# Local agent instructions and workspace settings
+PIPELINEIQ_AGENT_BRIEF.md
+.agents/
+.codex/

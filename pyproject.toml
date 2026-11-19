@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipelineiq"
+version = "0.1.0"
+description = "A local-first data pipeline observability learning project"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pyspark==4.0.5",
+    "delta-spark==4.0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.2.0"]
+
+[tool.setuptools.packages.find]
+include = ["pipelines", "pipelines.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["integration: starts a real local Spark JVM and reads/writes Delta"]
