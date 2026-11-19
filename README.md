@@ -4,11 +4,12 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: through Batch A3.** A deterministic generator creates healthy and
-faulty retail CSVs, and PySpark saves their source records to Bronze Delta tables
-with ingestion metadata. Silver/quarantine, Gold, full run metrics, monitoring,
-ML, and AI are future work.
+**Current scope: through Batch A4.** Synthetic retail CSVs flow through raw Bronze
+Delta tables into typed, validated Silver tables and quarantine with reason codes.
+Gold, full run metrics, monitoring, ML, and AI are future work.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
+
+Repository: [janjua321/pipelineIq](https://github.com/janjua321/pipelineIq).
 
 ## Environment choice
 
@@ -235,7 +236,7 @@ scripts/test.sh → pytest → generator, Bronze, and Spark smoke tests
 `SOURCE_SCHEMA` declares all eight source fields as nullable `StringType` columns.
 This is intentional: `quantity="abc"`, a negative price, an invalid timestamp, and
 duplicate IDs must remain available for later validation. Decimal spelling such
-as `001.2300` is retained. A4 will introduce numeric/date conversion and quality
+as `001.2300` is retained. Silver applies numeric/date conversion and quality
 decisions. Missing unquoted CSV fields become Spark nulls. Bronze stores parsed
 field values and row multiplicity; it is not a byte-for-byte archive of CSV quoting,
 line endings, or row order. Keep the original source file for those details.
@@ -286,6 +287,136 @@ bash scripts/test.sh tests/integration/test_bronze.py
 bash scripts/test.sh
 ```
 
+## Validate Silver and quarantine (A4)
+
+Run these after Bronze ingestion:
+
+```bash
+bash scripts/silver.sh process --bronze-table data/bronze/a2-healthy-001
+bash scripts/silver.sh process --bronze-table data/bronze/a2-incident-001
+bash scripts/silver.sh inspect --table data/silver/a2-incident-001 --limit 5
+bash scripts/silver.sh inspect --table data/quarantine/a2-incident-001 --limit 5
+```
+
+`scripts/silver.sh` selects the local Python/Java runtime and invokes
+`pipelines.silver.main()`. The process command reads the batch ID from Bronze's
+saved ingestion receipt and pins that table's version for the entire operation.
+It creates two new Delta tables at `data/silver/<batch-id>` and
+`data/quarantine/<batch-id>`. Use `--silver-root` and `--quarantine-root` to select
+different output roots; existing destinations are rejected before writing.
+
+```text
+scripts/silver.sh → pipelines.silver.main() → process_bronze()
+  → read a fixed Bronze version
+  → classify_transactions(): parse fields, collect reasons, rank duplicate keys
+  → cache classified rows and count outcomes
+  → split_classified()
+      ├─ no reasons → typed Silver Delta table
+      └─ one or more reasons → original fields + reason_codes in quarantine
+  → print receipt after both writes complete
+```
+
+The reusable retail rules live in `pipelines/quality.py`. They are Spark column
+expressions, not Python UDFs. Classification retains every input row. Only the
+Silver projection replaces source text with normalized/typed values; quarantine
+keeps the original eight fields and ingestion metadata.
+
+| Field | Silver policy/type | Rejection reason |
+| --- | --- | --- |
+| transaction_id | Required; surrounding whitespace removed | MISSING_TRANSACTION_ID |
+| customer_id | Required; surrounding whitespace removed | MISSING_CUSTOMER_ID |
+| product_id | Required; surrounding whitespace removed | MISSING_PRODUCT_ID |
+| quantity | Integer from 1 to 2147483647 | INVALID_QUANTITY |
+| unit_price | Nonnegative DECIMAL(18,2), at most two fractional digits in source | INVALID_UNIT_PRICE |
+| transaction_timestamp | Required ISO timestamp with timezone offset or Z | MISSING_TRANSACTION_TIMESTAMP / INVALID_TRANSACTION_TIMESTAMP |
+| Repeated normalized transaction_id | One otherwise-valid survivor per batch/key | DUPLICATE_TRANSACTION_ID for other occurrences |
+
+Quantity accepts signed base-10 integer text, then enforces the positive range.
+Price accepts base-10 digits with an optional sign and one or two decimal places;
+scientific notation, NaN, infinity, currency symbols, overflow, and excess decimal
+places are rejected. A value such as `1.001` is quarantined rather than rounded to
+`1.00`. Zero prices are valid. Safe casts turn unparseable numbers into nulls that
+validation can classify, rather than aborting the Spark job.
+
+Timestamp format is `yyyy-MM-dd'T'HH:mm:ss[.SSSSSS]XXX`: for example,
+`2026-01-01T05:30:00+05:30` becomes `2026-01-01 00:00:00` in the UTC Spark session.
+Fractional seconds may have up to six digits. Missing timezones, impossible dates,
+and special text such as `now` are rejected. Source batch/filename claims remain
+unchanged; validating their agreement with ingestion metadata is not an A4 rule.
+
+**Deterministic duplicate selection:** within each normalized transaction ID,
+prefer an otherwise-valid row, then the earliest parsed transaction timestamp,
+then the lexicographically smallest JSON representation of original source fields
+in schema order. A Spark window groups the keys, sorts by that policy, and assigns
+`row_number()`. Every occurrence after the representative receives the duplicate
+reason, including otherwise-invalid rows. If all rows for a key are invalid, all
+go to quarantine. Missing keys receive the missing-ID reason and are not treated
+as one shared duplicate group. Exact duplicate source rows are interchangeable:
+one can survive and the remaining identical occurrences are quarantined.
+
+For example, for the same key, an invalid 09:00 record cannot displace a valid
+10:00 record. A second valid 11:00 record is quarantined as a duplicate. This
+policy is scoped to a single Bronze batch; there is no cross-batch deduplication.
+
+**Reconciliation:** every classified row belongs to exactly one outcome:
+
+```text
+input_count = valid_count + quarantined_count
+```
+
+Duplicate rows are included in quarantine, not dropped upstream. `duplicate_count`
+counts the excess occurrences of nonmissing normalized keys. Reason categories
+can overlap, so summing their counts can exceed the number of quarantined rows.
+
+Both outputs retain the original Bronze run ID, add a new `validation_run_id` and
+UTC `validated_at`, and include `source_record_hash` (SHA-256 of the eight original
+source fields). The hash links transformed rows back to Bronze; it is not a unique
+row identifier because identical source records intentionally share it. Both Delta
+commits also contain the stage receipt with input/output counts and Bronze version.
+The full pipeline metric contract and Gold reporting remain A5 work.
+
+Measured local demonstration on 2026-11-19 (both output tables read back):
+
+| Batch | Bronze rows | Silver rows | Quarantine rows | Duplicate occurrences |
+| --- | ---: | ---: | ---: | ---: |
+| a2-healthy-001 | 100 | 100 | 0 | 0 |
+| a2-incident-001 | 80 | 56 | 24 | 7 |
+
+The full test suite passed 47 tests for this implementation. The progress log
+records the actual command results and current limitations.
+
+The two output writes are separate Delta transactions. A failure during the second
+write can leave a partial pair. The process returns success only after both writes;
+reruns refuse existing outputs, and automatic partial-write recovery is deferred
+to A6. Use a new pair of roots for an intentional fresh attempt; never assume that
+one output's presence proves that the other completed.
+
+```bash
+bash scripts/test.sh tests/integration/test_silver.py
+```
+
+## Git workflow
+
+`origin` points to `git@github.com:janjua321/pipelineIq.git`, with `main` tracking
+`origin/main`. The initial commit captures the project through Bronze. Each
+authorized completed batch should include updated progress notes, passing relevant
+tests, and a focused commit, followed by a push.
+
+```bash
+git status
+git diff
+bash scripts/test.sh
+# Stage the specific source/test/doc files changed for the batch.
+git add pipelines tests scripts README.md docs/PROGRESS.md
+git diff --cached --stat
+git commit -m "Describe the completed batch"
+git push
+```
+
+The local agent brief, generated data, environments, runtimes, and caches are
+ignored. Review staged paths before committing; GitHub stores code and documentation,
+while local Delta outputs are reproduced with the commands above.
+
 ## Troubleshooting
 
 - **Generator reports different data at an existing path:** retain the original
@@ -295,6 +426,9 @@ bash scripts/test.sh
   duplicate IDs must leave at least one distinct key in a nonempty batch.
 - **Bronze destination already exists:** inspect the saved table instead of
   ingesting it again, or choose another `--output-dir` for a separate copy.
+- **Silver/quarantine output already exists:** use inspect, or provide fresh
+  `--silver-root` and `--quarantine-root` directories. Do not assume a partial pair
+  is a completed stage if a previous process failed.
 - **CSV header/field-count error:** inspect the named source file and record. A3
   expects the eight-column generator contract and rejects blank records, missing
   fields, extra fields, and broken quoting. Business-rule defects remain ingestible.
@@ -317,20 +451,23 @@ bash scripts/test.sh
 - `pipelines/spark.py`: creates the local Delta-enabled session.
 - `pipelines/generate.py`: deterministic source generation, defect injection, and CSV CLI.
 - `pipelines/bronze.py`: explicit source schema, Bronze ingestion, metadata, and inspection CLI.
+- `pipelines/quality.py`: reusable retail parsing, reason codes, and duplicate-survivor policy.
+- `pipelines/silver.py`: pinned Bronze reads, reconciliation, and Silver/quarantine persistence.
 - `tests/integration/test_spark_smoke.py`: exercises and checks real persistence.
 - `tests/integration/test_bronze.py`: verifies source preservation and ingestion failures.
+- `tests/integration/test_silver.py`: verifies validation, deterministic selection, and saved outcomes.
 - `tests/unit/test_generate.py`: verifies generated data, CLI behavior, and safe repeats.
 - `scripts/test.sh`: selects the project environment and runs pytest.
 - `scripts/bronze.sh`: selects the project environment and runs Bronze commands.
+- `scripts/silver.sh`: selects the project environment and runs Silver/quarantine commands.
 - `pyproject.toml`: package metadata, dependency pins, and pytest configuration.
 - `.python-version`, `.gitignore`: interpreter choice and generated-file exclusions.
 - `docs/PROGRESS.md`: decisions, measured results, blockers, and next batch.
 
-After A3 review: A4 Silver/quarantine → A5 Gold/metrics → A6 rerun reliability. Monitoring, orchestration,
+After A4 review: A5 Gold/metrics → A6 rerun reliability. Monitoring, orchestration,
 ML, RAG, and the dashboard follow the milestones in the brief after that pipeline
 works and the developer has demonstrated it.
 
-**Exercise:** inspect `data/bronze/a2-incident-001`. Explain why all 80 source rows
-remain in Bronze, including duplicate IDs and bad amounts, and why `quantity` is
-currently a string. Identify which column contains the actual input path and which
-contains the source-reported filename.
+**Exercise:** inspect `data/quarantine/a2-incident-001` and find a row with multiple
+reason codes. Explain why adding per-reason counts can overcount bad rows, while
+`valid_count + quarantined_count` must equal the Bronze input count.
