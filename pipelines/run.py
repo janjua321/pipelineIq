@@ -14,6 +14,7 @@ from pipelines.bronze import ingest_csv
 from pipelines.gold import aggregate_daily
 from pipelines.silver import process_bronze
 from pipelines.spark import create_local_spark
+from pipelines.replay import batch_lock, digest, output_digests, verify_manifest
 
 
 SCHEMA_VERSION = "1"
@@ -88,14 +89,36 @@ def run_pipeline(spark: SparkSession, source: Path, batch_id: str, root: Path = 
     try:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", batch_id):
             raise ValueError("Invalid batch_id")
-        execute_attempt(spark, source.resolve(strict=True), batch_id, root, report)
+        with batch_lock(root / "locks" / f"{batch_id}.lock"):
+            source = source.resolve(strict=True)
+            source_digest = digest(source)
+            report["source_sha256"] = source_digest
+            manifest_path = root / "batches" / f"{batch_id}.json"
+            if manifest_path.exists():
+                previous = json.loads(manifest_path.read_text())
+                verify_manifest(previous, source_digest, POLICY_VERSION)
+                for name in ("input_count", "valid_count", "quarantined_count", "duplicate_count",
+                             "null_customer_id_count", "invalid_amount_count", "rates", "outputs", "total_revenue"):
+                    report[name] = previous[name]
+                report["status"] = "reused"
+                report["reused_from_run_id"] = previous["run_id"]
+            else:
+                execute_attempt(spark, source, batch_id, root, report)
+                if report["source_sha256"] != source_digest:
+                    raise ValueError("Source changed before snapshot; retry with a stable source")
+                report["finished_at"] = datetime.now(UTC).isoformat()
+                report["duration_ms"] = round((time.perf_counter() - started) * 1000)
+                save_json(report_path, report)
+                manifest = report | {"artifacts": output_digests(report["outputs"])}
+                save_json(manifest_path, manifest)
     except Exception as error:
         report["status"] = "failed"
         report["error_summary"] = f"{type(error).__name__}: {str(error)[:2000]}"
         raise
     finally:
-        report["finished_at"] = datetime.now(UTC).isoformat()
-        report["duration_ms"] = round((time.perf_counter() - started) * 1000)
+        if report["finished_at"] is None or report["status"] == "failed":
+            report["finished_at"] = datetime.now(UTC).isoformat()
+            report["duration_ms"] = round((time.perf_counter() - started) * 1000)
         save_json(report_path, report)
     return report
 
@@ -105,10 +128,14 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--batch-id", required=True)
     parser.add_argument("--root", type=Path, default=Path("data/pipeline"))
+    parser.add_argument("--show-gold", action="store_true", help="Display up to 20 daily product aggregates")
     args = parser.parse_args()
     spark = create_local_spark("pipelineiq-run")
     try:
-        print(json.dumps(run_pipeline(spark, args.source, args.batch_id, args.root), indent=2))
+        report = run_pipeline(spark, args.source, args.batch_id, args.root)
+        print(json.dumps(report, indent=2))
+        if args.show_gold:
+            spark.read.format("delta").load(report["outputs"]["gold"]).orderBy("transaction_date", "product_id").show(20, truncate=False)
     finally:
         spark.stop()
 

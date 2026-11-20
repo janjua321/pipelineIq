@@ -4,9 +4,9 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: through Batch A4.** Synthetic retail CSVs flow through raw Bronze
+**Current scope: Milestone A implemented (A1–A6).** Synthetic retail CSVs flow through raw Bronze
 Delta tables into typed, validated Silver tables and quarantine with reason codes.
-Gold, full run metrics, monitoring, ML, and AI are future work.
+The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation. Monitoring services, ML, and AI are future work.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
 
 Repository: [janjua321/pipelineIq](https://github.com/janjua321/pipelineIq).
@@ -177,7 +177,7 @@ uses an explicit text schema to preserve these source values before validation.
 **Idempotency:** identical generation at the same path leaves the file unchanged.
 Different content at an existing path is rejected; use another batch ID or output
 directory for a changed scenario. The generator never appends to an existing batch.
-This protects source fixtures; pipeline replay guarantees will be developed in A6.
+This protects source fixtures; the A6 complete-pipeline runner provides replay handling.
 
 This generator holds a batch in memory and intentionally targets small learning
 fixtures. It does not yet model realistic seasonality or guarantee identical output
@@ -272,12 +272,12 @@ The command prints a JSON ingestion receipt. The same receipt is stored in the
 Delta commit using [user-defined commit metadata](https://docs.delta.io/delta-batch/#set-user-defined-commit-metadata),
 so empty batches also retain their run ID, timestamp, source path, and count.
 `inspect` reads that saved metadata and independently counts the stored rows.
-This is ingestion provenance; the complete pipeline run/quality report belongs to A5.
+This is ingestion provenance; the A5 complete-pipeline runner persists the full run/quality report.
 
 **Existing destination behavior:** `ingest` rejects an existing batch directory.
 It does not append, overwrite, or silently skip. Use `inspect` to read it again;
 use a different `--output-dir` for an intentional separate copy. This conservative
-policy prevents accidental duplication while full replay handling waits for A6.
+policy prevents accidental duplication while the A6 runner supplies manifest-based replay handling.
 Only one ingestion process per destination is supported in this local iteration.
 
 Run only the Bronze integration checks or the full suite:
@@ -373,7 +373,7 @@ UTC `validated_at`, and include `source_record_hash` (SHA-256 of the eight origi
 source fields). The hash links transformed rows back to Bronze; it is not a unique
 row identifier because identical source records intentionally share it. Both Delta
 commits also contain the stage receipt with input/output counts and Bronze version.
-The full pipeline metric contract and Gold reporting remain A5 work.
+The A5 runner adds the complete local pipeline metric report and Gold aggregates.
 
 Measured local demonstration on 2026-11-19 (both output tables read back):
 
@@ -382,13 +382,12 @@ Measured local demonstration on 2026-11-19 (both output tables read back):
 | a2-healthy-001 | 100 | 100 | 0 | 0 |
 | a2-incident-001 | 80 | 56 | 24 | 7 |
 
-The full test suite passed 47 tests for this implementation. The progress log
+The A4 checkpoint passed 47 tests. The progress log
 records the actual command results and current limitations.
 
 The two output writes are separate Delta transactions. A failure during the second
 write can leave a partial pair. The process returns success only after both writes;
-reruns refuse existing outputs, and automatic partial-write recovery is deferred
-to A6. Use a new pair of roots for an intentional fresh attempt; never assume that
+reruns refuse existing outputs, and the A6 runner recovers by rebuilding an isolated attempt. Use a new pair of roots for an intentional fresh attempt; never assume that
 one output's presence proves that the other completed.
 
 ```bash
@@ -464,7 +463,7 @@ while local Delta outputs are reproduced with the commands above.
 - `.python-version`, `.gitignore`: interpreter choice and generated-file exclusions.
 - `docs/PROGRESS.md`: decisions, measured results, blockers, and next batch.
 
-After A4 review: A5 Gold/metrics → A6 rerun reliability. Monitoring, orchestration,
+After Milestone A review: Milestone B generic monitoring and orchestration. Monitoring, orchestration,
 ML, RAG, and the dashboard follow the milestones in the brief after that pipeline
 works and the developer has demonstrated it.
 
@@ -493,3 +492,52 @@ with both errors). All rates divide by Bronze input rows; empty-batch rates are 
 Quality categories overlap. Failures retain unknown counts as null, not fabricated
 zeros. These reports measure the entire new run, including source snapshot and stages;
 Java startup occurs before the runner and is outside its duration.
+
+
+## Reliable complete-pipeline command (A6)
+
+```bash
+bash scripts/run.sh --source data/source/a2-healthy-001.csv --batch-id a2-healthy-001 --show-gold
+bash scripts/run.sh --source data/source/a2-incident-001.csv --batch-id a2-incident-001 --show-gold
+# Repeat either command: status becomes reused and output paths stay unchanged.
+```
+
+A batch is identified by its ID within `--root` (default `data/pipeline`). Its
+completion manifest is `batches/<batch-id>.json`. Consumers should use output paths
+in this manifest, not scan and concatenate the attempts directory. Failed attempts
+remain there as diagnostic evidence and are never published as completed results.
+Old standalone A3/A4 outputs remain usable but are not imported into this runner.
+
+An exclusive Linux/Unix file lock serializes attempts for one batch; another active
+caller gets a failed report and can retry later. The OS releases the lock if a
+process exits or dies. A stable source snapshot isolates processing from subsequent
+source changes. A changed source hash or policy version for an already completed
+batch is rejected; use a new batch ID or output root for intentional reprocessing.
+Policy changes must increment POLICY_VERSION in pipelines/run.py.
+
+All stages write to a fresh UUID directory. After all writes and reconciliation
+succeed, an atomic JSON rename publishes the completion manifest. This handles
+partial Silver/quarantine pairs without deleting or overwriting them: retry builds
+a fresh complete attempt. It is an application publication boundary, not a multi-table
+Delta transaction. Standalone stage commands still reject existing destinations.
+
+Identical replays verify hashes of Delta commit JSON and Parquet files and report
+`reused` with `reused_from_run_id`. No new stage outputs are produced. Reused reports
+carry the published data counts, but their own UUID/timestamps/duration describe the
+reuse check, not fresh Spark processing. Ordinary exceptions produce failed metrics;
+a hard-killed process may leave a `running` report, which is not a completion signal.
+The manifest is authoritative. Automatic garbage collection, distributed locking,
+and guarantees across machine/power failure or network filesystems are out of scope.
+
+Optional `--show-gold` reads and displays up to 20 stored aggregate rows. Each batch
+has separate Gold aggregates; never sum reused run reports as new revenue. The full
+suite includes injected partial-write failure, retry, no-op replay, changed-source
+conflict, altered-output detection, lock exclusion, and atomic JSON failure checks.
+
+
+Milestone A verification on 2026-11-20: **54 tests passed in 69.08 seconds**.
+The complete healthy run produced 100 valid rows and revenue 14712.35. The incident
+run produced 56 valid and 24 quarantined rows, revenue 7686.31, and 11 invalid-amount
+rows (quantity/price categories overlap). An actual second incident execution reused
+the published outputs, leaving two attempt directories for three execution reports.
+See docs/PROGRESS.md for the measured counts, limits, and next proposed batch.

@@ -67,3 +67,45 @@ def test_failure_report_keeps_unknown_counts_null(spark, tmp_path):
     assert report["input_count"] is None
     assert "FileNotFoundError" in report["error_summary"]
     assert report["finished_at"] is not None
+
+
+def test_partial_write_retry_reuse_and_conflict(spark, tmp_path, monkeypatch):
+    from pathlib import Path
+    from pyspark.sql.readwriter import DataFrameWriter
+    source = write_batch(GenerationConfig(batch_id="retry", rows=3), tmp_path / "source")
+    root = tmp_path / "pipeline"
+    original_save = DataFrameWriter.save
+
+    def fail_quarantine(self, path=None, *args, **kwargs):
+        if path and '/quarantine/' in str(path):
+            raise RuntimeError('Injected failure after Silver write')
+        return original_save(self, path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DataFrameWriter, 'save', fail_quarantine)
+        with pytest.raises(RuntimeError, match='Injected failure'):
+            run_pipeline(spark, source, 'retry', root)
+    assert not (root / 'batches' / 'retry.json').exists()
+    failed = json.loads(next((root / 'metrics').glob('*.json')).read_text())
+    assert failed['status'] == 'failed'
+    assert failed['input_count'] == 3
+    completed = run_pipeline(spark, source, 'retry', root)
+    assert completed['status'] == 'completed'
+    assert completed['valid_count'] == 3
+    assert completed['run_id'] != failed['run_id']
+    attempts = list((root / 'attempts').iterdir())
+    reused = run_pipeline(spark, source, 'retry', root)
+    assert reused['status'] == 'reused'
+    assert reused['reused_from_run_id'] == completed['run_id']
+    assert reused['outputs'] == completed['outputs']
+    assert list((root / 'attempts').iterdir()) == attempts
+    assert spark.read.format('delta').load(reused['outputs']['gold']).selectExpr('sum(transaction_count)').first()[0] == 3
+    source.write_text(source.read_text() + '\n')
+    with pytest.raises(ValueError, match='different source'):
+        run_pipeline(spark, source, 'retry', root)
+    source.write_bytes((root / 'attempts' / completed['run_id'] / 'source' / source.name).read_bytes())
+    # A missing data file must never be reported as a successful no-op.
+    data_file = next(Path(completed['outputs']['gold']).glob('*.parquet'))
+    data_file.rename(data_file.with_suffix('.moved'))
+    with pytest.raises(ValueError, match='changed or is incomplete'):
+        run_pipeline(spark, source, 'retry', root)

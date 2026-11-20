@@ -1,115 +1,100 @@
 # PipelineIQ progress
 
-Current milestone/batch: A5 implemented; A6 authorized to finish Milestone A.
+Current milestone: A1–A6 implemented and verified; developer demonstration/review pending.
+Next proposed batch: B1 — Generic monitoring event schema and adapter.
+
+Authorization and Git:
+
+- On 2026-11-20 the developer requested finishing Milestone A and making the necessary commits.
+- Repository: https://github.com/janjua321/pipelineIq; main tracks origin/main.
+- e0f53dc: source generation and Bronze baseline.
+- 7f7c813: Silver validation and quarantine.
+- 6518508: Gold aggregation and persisted end-to-end run metrics (A5), pushed.
+- A6 is the final Milestone A checkpoint; use git log --oneline for its commit ID.
+- Keep committing/pushing each authorized completed batch with updated progress and tests.
+- PIPELINEIQ_AGENT_BRIEF.md is local, ignored, and never tracked. Generated data,
+  environments, runtimes, and caches remain ignored.
 
 Completed:
 
-- A1: isolated Python 3.12/Java 21 runtime and a real Spark/Delta smoke test.
-- A2: deterministic synthetic CSV generation, exact defect injection, safe repeats,
-  and tests. Developer reviewed generation and command entry points.
-- A3: explicit text-schema Bronze ingestion, preserved source records, run metadata,
-  inspection commands, and permanent healthy/incident tables.
-- On 2026-11-19, developer authorized GitHub setup, a Bronze baseline commit,
-  implementation through Silver/quarantine, and a second commit afterward.
-- A4: reusable retail quality expressions, safe parsing, deterministic duplicate
-  selection, typed Silver, original-value quarantine with reasons, stage receipts,
-  inspection commands, and integration coverage.
-- Processed both saved Bronze batches and read back their Silver/quarantine outputs.
+- A1: pinned local Python/Spark/Delta environment and real persistence smoke test.
+- A2: seeded source generator with exact defect counts and deterministic file output.
+- A3: explicit raw-text schema, Bronze preservation, ingestion metadata and inspection.
+- A4: typed Silver, deterministic duplicate selection, original-value quarantine with reasons.
+- A5: UTC daily/product Gold aggregates (transactions, units, decimal revenue), full
+  pipeline command, and persisted JSON run metrics including failures.
+- A6: exclusive local batch lock, immutable source snapshots, isolated attempt directories,
+  atomic completion manifests, identical-input reuse, source/policy conflicts,
+  saved-output integrity checks, and retries after partial writes.
 
-Git and collaboration:
+Run and inspect:
 
-- Repository: https://github.com/janjua321/pipelineIq
-- origin: git@github.com:janjua321/pipelineIq.git; main tracks origin/main.
-- Bronze baseline commit: e0f53dc — Add source generation and Bronze Delta ingestion.
-  This baseline was pushed successfully before A4 implementation.
-- PIPELINEIQ_AGENT_BRIEF.md remains local and ignored, along with agent settings,
-  generated data, runtimes, environments, and caches. It was never tracked.
-- Ongoing workflow: update this log, run relevant tests, and commit/push each
-  authorized completed batch. Use git log --oneline to see the latest commit IDs.
-- On 2026-11-20, developer authorized finishing Milestone A and committing each checkpoint.
+```bash
+bash scripts/run.sh --source data/source/a2-healthy-001.csv --batch-id a2-healthy-001 --show-gold
+bash scripts/run.sh --source data/source/a2-incident-001.csv --batch-id a2-incident-001 --show-gold
+bash scripts/test.sh
+```
 
-Decisions made:
+- Both demonstration batches are published. Repeating these commands verifies and reuses outputs.
+- Completion manifests: data/pipeline/batches/<batch-id>.json.
+- Per-execution metrics: data/pipeline/metrics/<run-id>.json.
+- Actual table paths are recorded in the manifests under outputs; each successful
+  attempt includes Bronze, Silver, quarantine and Gold Delta tables.
+- Read tables through these published paths, never by unioning all attempt directories.
+- Use --root to create a separate intentional replay environment.
+- Earlier standalone bronze.sh/silver.sh commands remain supported and reject existing paths.
 
-- Dependencies unchanged: Python 3.12.16, Java 21.0.13, PySpark 4.0.5,
-  Delta 4.0.1, pytest 9.2.0. Direct dependencies pinned; no full transitive lock yet.
-- Bronze retains source text and ingestion metadata. Read a fixed Delta version
-  for each validation run; leave Bronze unchanged.
-- Trim surrounding whitespace from Silver IDs and require transaction/customer/
-  product IDs. Quarantine retains their original values.
-- Quantity must be positive integer text in the 32-bit integer range. Price must
-  be nonnegative decimal text fitting DECIMAL(18,2); reject excess fractional
-  digits before casting so data is never silently rounded into acceptance.
-- Timestamp must include time and a timezone (offset or Z), with up to six
-  fractional digits. Parsed values use the UTC Spark session.
-- For repeated normalized transaction IDs: prefer otherwise-valid rows, then
-  earliest parsed timestamp, then stable original-source JSON ordering.
-  Exact duplicate source rows are interchangeable. Missing IDs are not a shared
-  duplicate group. All-invalid groups produce no Silver survivor.
-- Every input row goes to exactly one output. Duplicates go to quarantine:
-  input_count = valid_count + quarantined_count.
-- Reason codes may overlap. duplicate_count counts excess occurrences of
-  nonmissing normalized transaction IDs, including otherwise-invalid duplicates.
-- Both outputs retain Bronze lineage and add source_record_hash, validation_run_id,
-  and validated_at. Their Delta commits store the same stage receipt and input version.
-- Existing output paths are rejected before writing. No automatic overwrite/append.
+Verified results (2026-11-20):
 
-How to run (from the project root):
+- A5 targeted integration suite: 4 passed in 33.11s.
+- Full Milestone A suite: 54 passed in 69.08s (exit 0).
+- Tests cover exact decimal/day/product aggregation, empty/all-invalid inputs, error
+  metric persistence, partial Silver/quarantine write failure, clean retry, no-op reuse,
+  changed-source rejection, altered-output detection, lock exclusion, and atomic JSON writes.
+- CLI help and the optional --show-gold flow executed successfully.
+- Healthy and incident commands completed, then incident replay returned reused.
+- Verified exactly two attempt directories and three execution reports; replay points
+  to the original incident output paths and creates no new attempt.
 
-- All tests: bash scripts/test.sh
-- A4 tests: bash scripts/test.sh tests/integration/test_silver.py
-- Inspect Silver: bash scripts/silver.sh inspect --table data/silver/a2-incident-001
-- Inspect quarantine: bash scripts/silver.sh inspect --table data/quarantine/a2-incident-001
-- Process a new batch: bash scripts/silver.sh process --bronze-table data/bronze/<batch-id>
-- Both demonstration output pairs already exist. Use inspect; for an intentional
-  separate attempt, supply fresh --silver-root and --quarantine-root directories.
-- README contains setup, source/Bronze commands, validation policies, and Git workflow.
+| Batch | Input | Valid | Quarantine | Duplicates | Revenue |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| a2-healthy-001 | 100 | 100 | 0 | 0 | 14712.35 |
+| a2-incident-001 | 80 | 56 | 24 | 7 | 7686.31 |
 
-Last actual test results (2026-11-19):
+- Incident missing-customer count: 11; invalid-amount row count: 11.
+- Incident rates: quarantine 0.30, duplicates 0.0875, missing customers 0.1375,
+  invalid amounts 0.1375. Each denominator is 80 input rows.
+- Previous checkpoints: A3 38 tests passed; A4 47 tests passed.
 
-- Full suite: 47 passed in 56.85s, exit code 0 (38 existing + 9 A4 cases).
-- A4 tests cover missing/overlapping reasons, malformed and overflowing numbers,
-  precision rejection, UTC conversion, stable survivors across row order/partition
-  changes, exact duplicates, all-invalid groups, saved output reconciliation,
-  preserved source hashes, empty outputs, metadata, and rejected existing paths.
-- Actual CLI demonstrations: processed healthy and incident Bronze batches, then
-  inspected incident Silver and quarantine in separate Spark processes; all exited 0.
-- Shell syntax and Silver CLI help checks passed.
-- Historical baselines: A3 had 38 passing tests on 2026-11-11; A2 had 27 passing
-  tests on 2026-11-09. Spark tests run with permitted local JVM sockets.
+Contracts and decisions:
 
-Measured local demonstration:
+- Dependencies unchanged: Python 3.12.16, Java 21.0.13, PySpark 4.0.5, Delta 4.0.1,
+  pytest 9.2.0. Local Spark uses two worker threads and UTC.
+- Every input row enters Silver or quarantine. Duplicate occurrences are quarantined;
+  valid + quarantined = input. Overlapping reasons are not summed as distinct bad rows.
+- Missing customer counts include blank/whitespace IDs. Invalid amounts count the union
+  of invalid quantity and invalid price. Empty-batch rates are null; unknown failure counts
+  are null. Revenue is exact decimal text in JSON.
+- Metrics include run/pipeline/batch IDs, source path/hash, start/finish times, elapsed
+  duration, schema/policy versions, status, counts, rates, outputs and error summary.
+- Reuse gets a new execution UUID and duration, but references the published data counts
+  and outputs. Consumers must not treat reused reports as additional processed revenue.
+- Bump POLICY_VERSION for changes affecting data semantics. A completed batch with new
+  source bytes or a different policy requires a new batch ID or output root.
 
-| Batch | Bronze rows | Silver rows | Quarantine rows | Duplicate occurrences |
-| --- | ---: | ---: | ---: | ---: |
-| a2-healthy-001 | 100 | 100 | 0 | 0 |
-| a2-incident-001 | 80 | 56 | 24 | 7 |
+Known limits:
 
-Outputs live under data/silver/<batch-id> and data/quarantine/<batch-id>.
-The incident validation run ID is 19fa4f9b-9f4f-4d3c-95d0-7a373c327fb0.
-Inspection confirmed that quarantine contains original fields and overlapping
-reasons, while Silver stores integer quantity, decimal price, and timestamp values.
+- Local Linux/Unix filesystem workflow, one active writer per batch. No distributed
+  locking or power-loss/network-filesystem durability guarantee.
+- Individual Delta writes are separate transactions. The runner publishes a manifest only
+  after every stage succeeds; partial failed attempts are retained and excluded from publication.
+- A hard kill can leave a running metric report; the completion manifest is authoritative.
+  A retry starts a fresh attempt when no manifest exists. No automatic artifact cleanup yet.
+- JVM startup precedes the run lifecycle and its duration measurement. A JVM startup failure
+  does not create a pipeline report. Ordinary in-run exceptions do create failed reports.
+- Deduplication is within a batch. Generator data uses one fixed UTC day. No ML, RAG,
+  PostgreSQL collector, orchestration service, or dashboard has been added.
+- Implementation is verified; developer hands-on review is still pending before Milestone B.
 
-Known issues / limits:
-
-- No remaining blocker for A4 on this machine.
-- Silver and quarantine are separate Delta transactions. A failure during the
-  second write may leave a partial pair; success is reported only after both
-  writes finish. Recovery/concurrent-run handling remains A6 work.
-- Deduplication is within one batch. Source batch/filename claims are retained;
-  their agreement with ingestion metadata is not currently a quality rule.
-- Generator fixtures use one fixed day and small in-memory batches.
-- Gold and the complete pipeline run/quality metric contract are not implemented.
-- Git metadata/network operations and Spark sockets use the permitted unrestricted
-  runner in this managed workspace. No dependency upgrades were needed.
-
-Developer exercise:
-
-- Inspect an incident quarantine row with multiple reason codes. Explain why
-  summing per-reason counts can overcount bad rows, while Silver + quarantine
-  must equal the Bronze row count.
-
-Next proposed batch: A5 — Gold aggregation and persisted pipeline run/quality report.
-
-A5 checkpoint: added daily product Gold aggregates and a complete pipeline runner with persisted success/failure JSON reports. Sources are snapshotted and each attempt has isolated outputs. Tests and subsequent A6 verification are recorded below.
-
-A5 validation (2026-11-20): 4 integration tests passed in 33.11s.
+Exercise: run the incident command twice, inspect the two execution IDs, and explain why
+both reports can reference the same Gold table without adding revenue twice.
