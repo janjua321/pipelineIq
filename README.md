@@ -471,3 +471,25 @@ works and the developer has demonstrated it.
 **Exercise:** inspect `data/quarantine/a2-incident-001` and find a row with multiple
 reason codes. Explain why adding per-reason counts can overcount bad rows, while
 `valid_count + quarantined_count` must equal the Bronze input count.
+
+## Gold and complete run reports (A5)
+
+Run the whole pipeline with `bash scripts/run.sh --source data/source/a2-incident-001.csv --batch-id a2-incident-001`.
+Each execution snapshots its source and writes isolated Bronze, Silver, quarantine,
+and Gold tables under `data/pipeline/attempts/<run-id>/`. Reports are JSON files at
+`data/pipeline/metrics/<run-id>.json`; the command also prints the final report.
+`--root` selects a different local output root.
+
+Gold groups validated transactions by UTC date and product, calculating transaction
+count, units sold, and exact decimal revenue (`quantity * unit_price`). A groupBy
+requires Spark to bring matching keys together; the write executes that aggregation.
+Revenue is serialized as decimal text in JSON to preserve exact values.
+
+Reports include UUID, pipeline/batch IDs, source hash, start/finish times, elapsed
+milliseconds, status, schema/policy versions, counts, rates, output paths and errors.
+Missing-customer counts include null, empty and whitespace-only IDs. Invalid-amount
+counts are the union of invalid quantity and price rows (a row counts once even
+with both errors). All rates divide by Bronze input rows; empty-batch rates are null.
+Quality categories overlap. Failures retain unknown counts as null, not fabricated
+zeros. These reports measure the entire new run, including source snapshot and stages;
+Java startup occurs before the runner and is outside its duration.

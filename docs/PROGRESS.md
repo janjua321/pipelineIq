@@ -1,6 +1,6 @@
 # PipelineIQ progress
 
-Current milestone/batch: A4 — Silver validation and quarantine implemented and verified.
+Current milestone/batch: A5 implemented; A6 authorized to finish Milestone A.
 
 Completed:
 
@@ -26,7 +26,7 @@ Git and collaboration:
   generated data, runtimes, environments, and caches. It was never tracked.
 - Ongoing workflow: update this log, run relevant tests, and commit/push each
   authorized completed batch. Use git log --oneline to see the latest commit IDs.
-- Current scope ends at A4. Gold/metrics require the next authorized batch.
+- On 2026-11-20, developer authorized finishing Milestone A and committing each checkpoint.
 
 Decisions made:
 
@@ -109,3 +109,7 @@ Developer exercise:
   must equal the Bronze row count.
 
 Next proposed batch: A5 — Gold aggregation and persisted pipeline run/quality report.
+
+A5 checkpoint: added daily product Gold aggregates and a complete pipeline runner with persisted success/failure JSON reports. Sources are snapshotted and each attempt has isolated outputs. Tests and subsequent A6 verification are recorded below.
+
+A5 validation (2026-11-20): 4 integration tests passed in 33.11s.
