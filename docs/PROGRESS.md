@@ -4,6 +4,12 @@ Current milestone: B1 — Generic monitoring event schema and retail adapter imp
 Milestone A1–A6 remains complete.
 Next proposed batch: B2 — PostgreSQL execution/quality storage, migrations and retention assumptions.
 
+Last learning-notes update: 2026-11-21. Read the learning checkpoint below to
+understand the system, then use the verification sections to see what actually ran.
+Commands in this document assume you are in the repository root. Generated files
+exist on the development machine but are not on GitHub; on a fresh clone, follow
+the [README setup and source-generation instructions](../README.md) first.
+
 Authorization and Git:
 
 - On 2026-11-20 the developer requested finishing Milestone A and making the necessary commits.
@@ -14,7 +20,8 @@ Authorization and Git:
 - 7f7c813: Silver validation and quarantine.
 - 6518508: Gold aggregation and persisted end-to-end run metrics (A5), pushed.
 - 4a5c5d2: A6 replay and recovery, pushed.
-- B1 is the current checkpoint; its commit contains this progress update.
+- [e97ca7b](https://github.com/janjua321/pipelineIq/commit/e97ca7b): B1 monitoring contract,
+  retail adapter, tests and documentation, pushed.
 - Keep committing/pushing each authorized completed batch with updated progress and tests.
 - PIPELINEIQ_AGENT_BRIEF.md is local, ignored, and never tracked. Generated data,
   environments, runtimes, and caches remain ignored.
@@ -32,6 +39,131 @@ Completed:
   saved-output integrity checks, and retries after partial writes.
 - B1: contract 1 monitoring snapshots, strict generic validation, a retail report adapter,
   deterministic atomic file export, source/replay evidence, CLI, tests and contract documentation.
+
+**Learning checkpoint: understand what we have built**
+
+Milestone A processes transaction data. Milestone B1 describes those executions in
+a format that a monitoring system can understand. The saved run report connects
+the two: Spark measures the results, and the adapter translates those measurements.
+
+```mermaid
+flowchart TD
+    G[Generate a healthy or incident CSV] --> S[Save a source snapshot for the attempt]
+    S --> B[Bronze: preserve raw field values]
+    B --> V[Validate types, business rules and duplicates]
+    V --> SI[Silver: accepted typed rows]
+    V --> Q[Quarantine: rejected rows with reasons]
+    SI --> GO[Gold: daily totals by product]
+    GO --> R[Saved execution report]
+    Q --> R
+    R --> A[Retail monitoring adapter]
+    A --> C[Generic event validation]
+    C --> E[Saved monitoring event]
+```
+
+The diagram shows the successful data path. Failures also produce execution
+reports when they happen inside the runner. A6 separately publishes a completion
+manifest only after all stages succeed; that manifest identifies the published
+tables. A monitoring event alone does not prove publication or table integrity.
+
+**Why B1 was needed**
+
+The retail report has fields such as `null_customer_id_count`. A document-indexing
+pipeline might instead report `unreadable_documents`. Future monitoring code should
+be able to store and compare named measurements from either producer. B1 provides
+the shared structure, while each producer's adapter owns its business meanings.
+
+| Concept | Meaning in this project | Why it matters |
+| --- | --- | --- |
+| Contract/schema | Agreed event fields, types and meanings, identified by `contract_version` | Consumers can reject a report they cannot interpret |
+| Adapter | Code that maps a retail report into the shared event format | Retail rules stay outside the generic monitor |
+| Denominator | The population used to calculate a rate; retail uses input rows | A count of 11 means different things out of 80 and out of 8,000 |
+| Null | A measurement is unknown, or a rate is undefined | Failure before validation must not look like zero defects |
+| Evidence reference | A saved path to a report, source or output table | A reader can trace a measurement back to its source |
+| Execution snapshot | The currently exported state of one execution | Running and terminal states can occupy the same event path |
+| Atomic replacement | Write a complete temporary JSON file, then replace the destination | Readers see a complete old or new document |
+| Idempotent export | Exporting the same unchanged report again leaves the event file unchanged | Repeated delivery does not create extra event files |
+
+**Trace the measured incident example**
+
+The saved incident report contains 80 input rows, 56 valid rows and 24 quarantined
+rows. The retail adapter checks `80 = 56 + 24`. It also checks that the saved rates
+agree with their counts. It does not read the source CSV or rerun Spark validation.
+
+There are 11 rows with a missing customer ID. The adapter represents this as the
+following excerpt from `quality_metrics`:
+
+```json
+{
+  "null_customer_id_count": {
+    "count": 11,
+    "denominator": 80,
+    "rate": 0.1375
+  }
+}
+```
+
+The rate is `11 / 80 = 0.1375`, or 13.75%. This is a proportion; it does not by
+itself mean an anomaly has been detected. Historical comparison and alerting are
+later work. A row can have several defects, so quality-category counts must not be
+added to calculate distinct quarantined rows. The 7 duplicates are already included
+in the 24 quarantined rows.
+
+Revenue stays the string `"7686.31"` in event properties to preserve the pipeline's
+exact decimal result. Exporting the event does not generate additional revenue.
+
+**Distinguish a batch, a run and an export**
+
+| Identifier/action | Example or behavior |
+| --- | --- |
+| `pipeline_id` | `retail_transactions` identifies the producer |
+| `batch_id` | `a2-incident-001` identifies a logical input batch within the runner's output root |
+| Top-level `run_id` | A new UUID for each invocation of the full pipeline runner |
+| Exporting a report | Preserves that report's run UUID; exporting does not create an execution |
+| Repeating a completed batch | Creates a new execution report with `status: reused` and an original-run reference |
+
+Bronze ingestion and Silver validation also have their own stage IDs. B1 uses the
+top-level execution UUID from `data/pipeline/metrics/`, not a stage ID from a table.
+
+Two exports of one report leave one event file. Two pipeline invocations produce
+two reports and can produce two event files. If the second invocation reused the
+first one's outputs, its rows and revenue must not be counted again as newly
+processed data. Its duration measures verification rather than fresh processing.
+
+**Entry points and a useful code-reading order**
+
+| Read this file/function | Responsibility |
+| --- | --- |
+| [scripts/run.sh](../scripts/run.sh) | Selects the Python/Java environment and starts `python -m pipelines.run` |
+| [pipelines/run.py](../pipelines/run.py): `main`, `run_pipeline`, `execute_attempt` | Creates Spark, manages execution/reuse, runs stages and saves metrics |
+| [pipelines/monitoring.py](../pipelines/monitoring.py): `main`, `export_report` | Reads one saved report and writes its event; this is the B1 CLI entry point |
+| Same file: `adapt_report` | Maps fields and enforces retail-specific relationships |
+| [monitoring/events.py](../monitoring/events.py): `quality_metric`, `validate_event`, `dumps_event` | Builds measurements, validates the generic contract and serializes deterministic JSON |
+| [Adapter tests](../tests/unit/test_monitoring_adapter.py) and [event tests](../tests/unit/test_monitoring_events.py) | Show accepted examples, rejected inputs and expected replay behavior |
+
+`python -m pipelines.monitoring` runs the module's `main()` function. Its call path
+is `main → export_report → adapt_report → validate_event`, followed by serialization
+and file publication. This command uses Python only. The separate `scripts/run.sh`
+command starts Spark, including when the runner subsequently reuses a batch.
+
+The generic validator checks structural and measurement rules, such as UUIDs,
+timezone-aware timestamps and rate arithmetic. The retail adapter checks business
+relationships, including `input = valid + quarantined`. That distinction lets
+another pipeline legitimately turn four documents into eight output records.
+
+**Where to find each result**
+
+| Location | What to read there |
+| --- | --- |
+| `data/source/<batch-id>.csv` | Generated healthy or incident input |
+| `data/pipeline/attempts/<run-id>/` | Snapshot and table files produced during an attempt; may include unpublished failures |
+| `data/pipeline/batches/<batch-id>.json` | Completion manifest and authoritative published output paths |
+| `data/pipeline/metrics/<run-id>.json` | Original retail execution report, including failed or reused executions |
+| `data/monitoring/events/retail_transactions/<run-id>.json` | B1's translated monitoring snapshot |
+
+For complete field definitions and validation rules, read the
+[monitoring event contract](monitoring-events.md). For generating fixtures and
+inspecting individual Delta layers, use the [README](../README.md).
 
 Run and inspect:
 
@@ -140,6 +272,38 @@ Known limits:
   manifests remain authoritative. Monitoring export does not re-read Delta or verify artifacts.
 - B1 is verified; developer hands-on review is pending. B2–B5 are not implemented.
 
-Exercise: export the incident report twice, then export its separate reused report.
-Explain why repeated export leaves one event file, while a reused execution has another
-file without representing newly processed revenue. Next proposed batch: B2.
+**Practice when returning to this project**
+
+1. Read the measured results above, then run the export loop in “Run and inspect.”
+   This exports reports already present; it does not execute the pipeline.
+2. Open an original incident report and the event with the same UUID. Find where
+   `null_customer_id_count`, `total_revenue` and the Gold path moved in the event.
+3. Run the export loop again. For unchanged reports, the event count and file
+   modification times should stay unchanged.
+4. Find an event with `status: reused`. Follow `reused_from_run_id` to its original
+   report. Explain why both executions reference the same output tables.
+5. Before reading the answer below, predict the quality rate for an empty input,
+   and the count when a run fails before measuring quality.
+
+Answer check: the empty-input rate is null because division by zero is undefined.
+An unmeasured quality count is also null. A measured count of zero over a positive
+input population gives a rate of zero. These three cases carry different evidence.
+
+Common mistakes to recognize:
+
+- Passing a source CSV to `--report`: the exporter expects the runner's JSON report.
+- Adding duplicate count to quarantine count: duplicate rows are already quarantined.
+- Summing revenue across all execution events: reused executions repeat prior results.
+- Treating `completed_with_warnings` as an anomaly alert: it currently means the retail
+  run completed with quarantined rows; statistical anomaly detection is not implemented.
+- Assuming the export loop starts a collector: it manually writes local JSON snapshots.
+
+Next proposed batch: **B2 — PostgreSQL execution/quality storage, migrations and
+retention assumptions.** This will make executions queryable across runs and will
+need explicit rules for repeated submissions and lifecycle updates. B3 adds the
+HTTP API, B4 adds Airflow orchestration, and B5 adds a history comparison report.
+
+Documentation-only follow-up (2026-11-21): expanded this progress file with the
+learning checkpoint, measured example, reading order and exercises. Application
+code is unchanged. The 119-test result above is from B1 implementation verification;
+the suite was not rerun for this prose-only update.
