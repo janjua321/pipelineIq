@@ -8,6 +8,7 @@ from pyspark.sql.types import StructType, StructField, StringType, IntegerType, 
 
 from pipelines.gold import aggregate_daily
 from pipelines.generate import GenerationConfig, write_batch
+from pipelines.monitoring import adapt_report
 from pipelines.run import run_pipeline
 from pipelines.spark import create_local_spark
 
@@ -55,6 +56,11 @@ def test_run_report_is_persisted_and_reconciled(spark, tmp_path, size):
     assert report["status"] == ("completed_with_warnings" if size else "completed")
     saved = json.loads((tmp_path / "pipeline" / "metrics" / f"{report['run_id']}.json").read_text())
     assert saved == report
+    event = adapt_report(saved)
+    assert event["row_counts"]["input_count"] == size
+    assert event["quality_metrics"]["invalid_amount_count"] == {
+        "count": size, "denominator": size, "rate": 1.0 if size else None,
+    }
     assert report["duration_ms"] >= 0 and report["finished_at"] >= report["started_at"]
     assert spark.read.format("delta").load(report["outputs"]["gold"]).count() == 0
 
@@ -67,6 +73,9 @@ def test_failure_report_keeps_unknown_counts_null(spark, tmp_path):
     assert report["input_count"] is None
     assert "FileNotFoundError" in report["error_summary"]
     assert report["finished_at"] is not None
+    event = adapt_report(report)
+    assert event["status"] == "failed"
+    assert event["row_counts"]["input_count"] is None
 
 
 def test_partial_write_retry_reuse_and_conflict(spark, tmp_path, monkeypatch):
@@ -89,6 +98,7 @@ def test_partial_write_retry_reuse_and_conflict(spark, tmp_path, monkeypatch):
     failed = json.loads(next((root / 'metrics').glob('*.json')).read_text())
     assert failed['status'] == 'failed'
     assert failed['input_count'] == 3
+    assert adapt_report(failed)['quality_metrics']['duplicate_count']['count'] is None
     completed = run_pipeline(spark, source, 'retry', root)
     assert completed['status'] == 'completed'
     assert completed['valid_count'] == 3
@@ -98,6 +108,9 @@ def test_partial_write_retry_reuse_and_conflict(spark, tmp_path, monkeypatch):
     assert reused['status'] == 'reused'
     assert reused['reused_from_run_id'] == completed['run_id']
     assert reused['outputs'] == completed['outputs']
+    event = adapt_report(reused)
+    assert event['reused_from_run_id'] == completed['run_id']
+    assert event['evidence']['gold'] == completed['outputs']['gold']
     assert list((root / 'attempts').iterdir()) == attempts
     assert spark.read.format('delta').load(reused['outputs']['gold']).selectExpr('sum(transaction_count)').first()[0] == 3
     source.write_text(source.read_text() + '\n')

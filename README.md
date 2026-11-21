@@ -4,9 +4,12 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: Milestone A implemented (A1–A6).** Synthetic retail CSVs flow through raw Bronze
+**Current scope: Milestone A and monitoring batch B1 implemented.** Synthetic retail CSVs flow through raw Bronze
 Delta tables into typed, validated Silver tables and quarantine with reason codes.
-The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation. Monitoring services, ML, and AI are future work.
+The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation.
+B1 translates those reports into validated, generic monitoring events without starting Spark.
+PostgreSQL persistence, monitoring services, orchestration, ML, and AI are future work.
+See [the monitoring contract](docs/monitoring-events.md) for B1's fields and semantics.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
 
 Repository: [janjua321/pipelineIq](https://github.com/janjua321/pipelineIq).
@@ -406,7 +409,7 @@ git status
 git diff
 bash scripts/test.sh
 # Stage the specific source/test/doc files changed for the batch.
-git add pipelines tests scripts README.md docs/PROGRESS.md
+git add pipelines monitoring tests scripts pyproject.toml README.md docs
 git diff --cached --stat
 git commit -m "Describe the completed batch"
 git push
@@ -444,6 +447,9 @@ while local Delta outputs are reproduced with the commands above.
   command in a local terminal where those are permitted.
 - **Native Hadoop library warning:** Spark normally falls back to bundled Java
   implementations for this local check. Judge success by assertions and exit code.
+- **Monitoring export rejected:** pass a JSON file from `data/pipeline/metrics/`,
+  then inspect the field named in the error. Keep unknown counts as null; do not
+  substitute zero or edit a rate to hide a disagreement with its numerator.
 
 ## Files and next steps
 
@@ -452,6 +458,10 @@ while local Delta outputs are reproduced with the commands above.
 - `pipelines/bronze.py`: explicit source schema, Bronze ingestion, metadata, and inspection CLI.
 - `pipelines/quality.py`: reusable retail parsing, reason codes, and duplicate-survivor policy.
 - `pipelines/silver.py`: pinned Bronze reads, reconciliation, and Silver/quarantine persistence.
+- `pipelines/gold.py`, `pipelines/run.py`, `pipelines/replay.py`: aggregation, run metrics and safe replay.
+- `monitoring/events.py`: versioned, generic execution-event validation and JSON serialization.
+- `pipelines/monitoring.py`: retail report adapter and standalone event-export CLI.
+- `docs/monitoring-events.md`: event fields, identity, denominators and adapter semantics.
 - `tests/integration/test_spark_smoke.py`: exercises and checks real persistence.
 - `tests/integration/test_bronze.py`: verifies source preservation and ingestion failures.
 - `tests/integration/test_silver.py`: verifies validation, deterministic selection, and saved outcomes.
@@ -463,9 +473,9 @@ while local Delta outputs are reproduced with the commands above.
 - `.python-version`, `.gitignore`: interpreter choice and generated-file exclusions.
 - `docs/PROGRESS.md`: decisions, measured results, blockers, and next batch.
 
-After Milestone A review: Milestone B generic monitoring and orchestration. Monitoring, orchestration,
-ML, RAG, and the dashboard follow the milestones in the brief after that pipeline
-works and the developer has demonstrated it.
+Milestone B is underway with B1's generic event schema and retail adapter.
+The next batch is B2: PostgreSQL storage, migrations and retention assumptions.
+The API, Airflow orchestration and history report follow in B3–B5.
 
 **Exercise:** inspect `data/quarantine/a2-incident-001` and find a row with multiple
 reason codes. Explain why adding per-reason counts can overcount bad rows, while
@@ -541,3 +551,46 @@ run produced 56 valid and 24 quarantined rows, revenue 7686.31, and 11 invalid-a
 rows (quantity/price categories overlap). An actual second incident execution reused
 the published outputs, leaving two attempt directories for three execution reports.
 See docs/PROGRESS.md for the measured counts, limits, and next proposed batch.
+
+
+## Generic monitoring events (B1)
+
+Export a saved run report without restarting Spark:
+
+```bash
+# Export all reports currently saved by the full pipeline runner.
+for report in data/pipeline/metrics/*.json; do
+  .venv/bin/python -m pipelines.monitoring --report "$report"
+done
+```
+
+The command prints validated JSON and writes
+`data/monitoring/events/<pipeline-id>/<run-id>.json`. Use `--output-dir` to choose
+another destination. An unchanged report produces identical bytes and leaves its
+existing export untouched. A changed execution snapshot replaces the same file
+atomically; this local exporter does not order concurrent or stale updates.
+
+`monitoring/events.py` owns a generic, versioned contract: execution identity,
+status, UTC timestamps, named row counts, quality measurements, string properties,
+evidence references and errors. `pipelines/monitoring.py` translates the retail
+report and applies retail-specific checks. Neither module imports Spark. No new
+runtime dependencies are needed. Package discovery now includes `monitoring`.
+
+Each quality measurement includes its count, denominator and rate. Unknown values
+remain null, and an empty batch has a null rate. Revenue remains exact decimal
+text. A reused run keeps its separate execution ID and original-run reference;
+its counts and revenue describe reused outputs and must not be added as new work.
+
+The [full contract documentation](docs/monitoring-events.md) explains every field,
+source mapping, lifecycle and limitation. PostgreSQL collection is the next batch.
+
+Executed on 2026-11-21: 65 focused B1 tests passed, and the full suite passed
+119 tests in 69.52 seconds. All three saved A6 demonstration reports exported
+successfully; repeating each export preserved the same three files and their
+modification times. The source reports were unchanged. An offline source/wheel
+build included both the generic monitor and retail adapter.
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_monitoring_events.py tests/unit/test_monitoring_adapter.py
+bash scripts/test.sh
+```
