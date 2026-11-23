@@ -52,7 +52,10 @@ def _timestamp(value: object, field: str) -> datetime:
         raise EventValidationError(f"{field}: expected ISO 8601 timestamp") from error
     _require("T" in value and parsed.tzinfo is not None,
              f"{field}: expected timestamp with T and explicit timezone")
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError as error:
+        raise EventValidationError(f"{field}: timestamp is outside the supported UTC range") from error
 
 
 def quality_metric(count: int | None, denominator: int | None) -> dict:

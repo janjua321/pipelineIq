@@ -4,6 +4,8 @@ B2 stores validated contract-1 events without importing Spark or retail logic.
 `monitoring/cli.py` is the command-line entry point; `monitoring/store.py` owns
 parameterized SQL, transactions, lifecycle rules and queries. The SQL migration
 is packaged with the application so installed commands work outside the checkout.
+B3 exposes this same store through the [local HTTP API](monitoring-api.md); CLI and
+HTTP submissions share execution identities, transactions and conflict rules.
 
 ## Setup and commands
 

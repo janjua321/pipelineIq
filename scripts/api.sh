@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$project_dir"
+exec .venv/bin/python -m uvicorn api.app:create_app --factory --host 127.0.0.1 --port 8000 "$@"

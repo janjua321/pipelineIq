@@ -14,11 +14,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.2.0"]
+dev = ["pytest==9.2.0", "httpx==0.28.1"]
 monitoring = ["psycopg[binary]==3.3.9"]
+api = ["psycopg[binary]==3.3.9", "fastapi==0.165.0", "pydantic==2.14.4", "uvicorn==0.54.0"]
 
 [tool.setuptools.packages.find]
-include = ["pipelines", "pipelines.*", "monitoring", "monitoring.*"]
+include = ["pipelines", "pipelines.*", "monitoring", "monitoring.*", "api", "api.*"]
 
 [tool.setuptools.package-data]
 monitoring = ["migrations/*.sql"]

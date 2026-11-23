@@ -1,8 +1,8 @@
 # PipelineIQ progress
 
-Current milestone: B2 — PostgreSQL storage implemented and verified; B3 API next in this authorized session.
+Current milestone: B1–B3 implemented; PostgreSQL persistence and the local monitoring API are verified.
 Milestone A1–A6 remains complete.
-Next batch in this session: B3 — FastAPI submission and query endpoints.
+Next proposed batch: B4 — Airflow orchestration, retries and failure reporting.
 
 Last learning-notes update: 2026-11-23. Read the learning checkpoint below to
 understand the system, then use the verification sections to see what actually ran.
@@ -24,6 +24,8 @@ Authorization and Git:
 - 4a5c5d2: A6 replay and recovery, pushed.
 - [e97ca7b](https://github.com/janjua321/pipelineIq/commit/e97ca7b): B1 monitoring contract,
   retail adapter, tests and documentation, pushed.
+- 32565ff: B2 PostgreSQL storage, migrations, tests and learning documentation, pushed.
+- B3 is the current checkpoint; its commit contains this progress update.
 - Keep committing/pushing each authorized completed batch with updated progress and tests.
 - PIPELINEIQ_AGENT_BRIEF.md is local, ignored, and never tracked. Generated data,
   environments, runtimes, and caches remain ignored.
@@ -41,6 +43,8 @@ Completed:
   saved-output integrity checks, and retries after partial writes.
 - B1: contract 1 monitoring snapshots, strict generic validation, a retail report adapter,
   deterministic atomic file export, source/replay evidence, CLI, tests and contract documentation.
+- B2: PostgreSQL execution/metric tables, checksum migrations, transactional writes, lifecycle conflicts, local setup and queries.
+- B3: FastAPI submission, exact lookup, filtered pagination, readiness, strict input validation and OpenAPI docs.
 
 **Learning checkpoint: understand what we have built**
 
@@ -242,7 +246,7 @@ Contracts and decisions:
   Reused executions retain their original run reference and must be excluded from newly
   processed totals and processing-time baselines.
 
-- Dependencies unchanged: Python 3.12.16, Java 21.0.13, PySpark 4.0.5, Delta 4.0.1,
+- Pipeline dependencies unchanged: Python 3.12.16, Java 21.0.13, PySpark 4.0.5, Delta 4.0.1,
   pytest 9.2.0. Local Spark uses two worker threads and UTC.
 - Every input row enters Silver or quarantine. Duplicate occurrences are quarantined;
   valid + quarantined = input. Overlapping reasons are not summed as distinct bad rows.
@@ -266,13 +270,13 @@ Known limits:
   A retry starts a fresh attempt when no manifest exists. No automatic artifact cleanup yet.
 - JVM startup precedes the run lifecycle and its duration measurement. A JVM startup failure
   does not create a pipeline report. Ordinary in-run exceptions do create failed reports.
-- Deduplication is within a batch. Generator data uses one fixed UTC day. No ML, RAG,
-  PostgreSQL collector, orchestration service, or dashboard has been added.
+- Deduplication is within a batch. Generator data uses one fixed UTC day. PostgreSQL
+  collection and the local API are implemented; orchestration, ML, RAG and the dashboard are future work.
 - B1 exporter is manual single-writer tooling, with no ordering of stale/concurrent updates
-  and no historical snapshot archive. B2 must define database lifecycle and conflict handling.
+  and no historical snapshot archive. B2 applies stricter lifecycle/conflict rules when persisting to PostgreSQL.
 - Evidence paths are references, not proof of publication or output integrity. A6 completion
   manifests remain authoritative. Monitoring export does not re-read Delta or verify artifacts.
-- B1 is verified; developer hands-on review is pending. B2–B5 are not implemented.
+- B1–B3 are verified; developer hands-on review is pending. B4–B5 are not implemented.
 
 **Practice when returning to this project**
 
@@ -300,10 +304,9 @@ Common mistakes to recognize:
   run completed with quarantined rows; statistical anomaly detection is not implemented.
 - Assuming the export loop starts a collector: it manually writes local JSON snapshots.
 
-Next proposed batch: **B2 — PostgreSQL execution/quality storage, migrations and
-retention assumptions.** This will make executions queryable across runs and will
-need explicit rules for repeated submissions and lifecycle updates. B3 adds the
-HTTP API, B4 adds Airflow orchestration, and B5 adds a history comparison report.
+B2 and B3 are now implemented; their learning notes follow below.
+Next proposed batch: **B4 — Airflow orchestration, retries and failure reporting.**
+B5 will add a history comparison report.
 
 Documentation-only follow-up (2026-11-21): expanded this progress file with the
 learning checkpoint, measured example, reading order and exercises. Application
@@ -332,7 +335,7 @@ original event, so that reference is not a foreign key.
 Executed: 9 real PostgreSQL tests passed in 0.43s, covering migrations, concurrency,
 rollback, replay references, nulls, pagination and parameterized filtering. The
 existing three demonstration events were stored and read back unchanged. Each
-repeat submission returned unchanged. Full regression testing follows with B3.
+repeat submission returned unchanged. The final combined regression result appears below.
 PostgreSQL 18.6 and Psycopg 3.3.9 were used. The project database uses a private Unix
 socket, with no TCP listener. No system database service was changed.
 
@@ -346,4 +349,146 @@ no scheduled deletion. Test fixtures use a separate database ending in _test and
 clean up only their generated pipeline namespace.
 
 Exercise: submit one event twice, then query its quality rows. Explain why one
-execution and one set of quality measurements remain. Next: B3, already authorized.
+execution and one set of quality measurements remain. B3 builds on this store below.
+
+**B3 checkpoint — HTTP API and completed B1–B3 flow (2026-11-23)**
+
+B3 gives the store an HTTP interface. Think of a request as a message carrying an
+already measured event. FastAPI handles routing; Pydantic exposes typed fields and
+calls the existing generic contract validator. The store then decides whether the
+message creates an execution, finishes a running execution, repeats known evidence,
+or conflicts with it. Neither submission nor querying starts Spark.
+
+```mermaid
+flowchart LR
+    Report[Saved retail report] --> Adapter[B1 adapter and event validation]
+    Adapter --> File[Monitoring event JSON]
+    File --> Submit[B3 HTTP POST or B2 CLI submit]
+    Submit --> Transaction[B2 transaction and lifecycle checks]
+    Transaction --> DB[(PostgreSQL execution and metric rows)]
+    DB --> Query[B3 GET or B2 CLI query]
+```
+
+| Read this next | What you learn |
+| --- | --- |
+| [Migration SQL](../monitoring/migrations/001_executions.sql) | Primary keys identify rows; foreign keys link metrics; constraints reject invalid values |
+| [Storage module](../monitoring/store.py) | `migrate`, `EventStore.submit/get/list`, database transactions and concurrent-update locking |
+| [Database CLI](../monitoring/cli.py) | Explicit migrations, event submission and queries without HTTP |
+| [API models](../api/models.py) | Pydantic describes request/response shapes and reuses B1 validation |
+| [API application](../api/app.py) | Body validation, routes, status codes and sanitized database failures |
+| [API script](../scripts/api.sh) | Starts Uvicorn on loopback; the application factory reads configuration |
+| [Storage tests](../tests/integration/test_store.py) and [API tests](../tests/integration/test_api.py) | Concrete examples of concurrency, rollback, rejection and HTTP behavior |
+
+Entry points:
+
+- Database setup: `bash scripts/postgres.sh start`; this uses installed PostgreSQL
+  tools and creates only a dedicated project cluster, not a system service.
+- Migration/submission/query: `.venv/bin/python -m monitoring.cli` with a subcommand.
+- HTTP service: `bash scripts/api.sh` → Uvicorn → `api.app.create_app()`.
+- POST: `parse_event` → `ExecutionEvent`/B1 validation → `EventStore.submit` → receipt.
+- GET: validated query/path parameters → `EventStore.get/list` → stored event response.
+
+A transaction is the boundary that keeps the parent execution and child metric
+rows consistent. A duplicate submission is detected by identity plus canonical
+content, not just by the batch label. The database keeps the complete JSON event
+and separately stores named measurements for later SQL analysis. Unknown counts
+stay SQL NULL. Exact revenue stays decimal text in the JSON properties.
+
+Use these commands after exporting events with B1:
+
+```bash
+bash scripts/postgres.sh start
+export PIPELINEIQ_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq"
+.venv/bin/python -m monitoring.cli migrate
+.venv/bin/python -m monitoring.cli list --pipeline-id retail_transactions
+bash scripts/api.sh
+```
+
+In a second terminal, inspect readiness and submit/query events:
+
+```bash
+curl --fail-with-body http://127.0.0.1:8000/health/ready
+for event in data/monitoring/events/retail_transactions/*.json; do
+  curl --fail-with-body -H 'Content-Type: application/json' \
+    --data-binary "@$event" http://127.0.0.1:8000/v1/runs
+done
+curl --fail-with-body 'http://127.0.0.1:8000/v1/runs?pipeline_id=retail_transactions&limit=20'
+curl --fail-with-body 'http://127.0.0.1:8000/v1/runs?status=reused'
+```
+
+Visit `http://127.0.0.1:8000/docs` for interactive API documentation. An event first
+submitted to an empty database returns **201 created**. Our saved demo events are
+already in the database, so submitting them now returns **200 unchanged**. A running
+to terminal transition returns **200 updated**; incompatible evidence returns **409**.
+Validation failures return **422** and do not create rows. Missing executions return
+**404**. An unavailable database or missing tables return **503**.
+
+Executed verification, not suggested results:
+
+- B2 checkpoint: 9 PostgreSQL tests passed in 0.43s.
+- Initial combined B2/B3 targeted run: 24 passed in 1.01s.
+- Final full suite: **146 passed, 1 warning in 68.70s**, exit 0, with the dedicated
+  PostgreSQL test DSN enabled and all Spark tests executed. No tests skipped.
+- Log: `.cache/milestone-b3-tests.log` (ignored). The warning is Starlette's
+  deprecation of HTTPX for its test client; HTTPX 0.28.1 still passed this suite.
+  A future test-dependency update should migrate that integration deliberately.
+- Final tests include three additional edge cases: UTC timestamp overflow,
+  escaped invalid Unicode, and PostgreSQL-unrepresentable NUL text. Rejected
+  requests do not leave an execution behind.
+- A live Uvicorn server on loopback port 8013 accepted all three existing demo
+  events as unchanged, returned exact events by identity, filtered exactly one
+  reused execution, and served the OpenAPI schema. The temporary server was stopped.
+- After stopping/restarting the dedicated PostgreSQL cluster, all three retail
+  executions remained available, including the reused reference. The database is
+  left running for local use; start the API yourself with the script above.
+- An offline source/wheel build succeeded. Wheel inspection confirmed API modules,
+  the store and migration SQL are packaged. Brief, generated data and caches are excluded.
+- Local documentation links, Bash command syntax and shell scripts were checked.
+
+| Saved retail execution | Input | Valid | Quarantined | Submission on live demo |
+| --- | ---: | ---: | ---: | --- |
+| completed | 100 | 100 | 0 | unchanged |
+| completed_with_warnings | 80 | 56 | 24 | unchanged |
+| reused | 80 | 56 | 24 | unchanged; references the incident execution |
+
+These are three executions over two processed batches. The reused row describes
+existing output; it is not another 80 newly processed rows or another 7,686.31 in
+revenue. B5's future history report must preserve that distinction.
+
+Dependencies added as optional extras: Psycopg 3.3.9 for storage; FastAPI 0.165.0,
+Pydantic 2.14.4 and Uvicorn 0.54.0 for the API; HTTPX 0.28.1 for tests. Direct pins
+are recorded in pyproject.toml; transitive dependencies are not yet locked. Install
+`.[dev,monitoring,api]` for the complete current suite. PostgreSQL server tools are
+an external prerequisite, verified locally at version 18.6. Existing pipeline
+Python/Spark/Delta versions were retained.
+
+Practical limits to remember:
+
+- API is local, unauthenticated, and loopback-bound by default. Shared/public
+  deployment, TLS and authorization are not implemented.
+- One database connection is opened per operation; there is no pool or retry queue.
+- Events are capped at 1 MiB; large logs/data stay in referenced evidence files.
+- Database storage keeps current execution snapshots, not a full lifecycle audit.
+  It rejects changed running snapshots and terminal overwrites because contract 1
+  lacks a revision number. File export itself remains less strict; see the B1 notes.
+- Retention remains indefinite with no automatic purge or deletion endpoint.
+- Readiness checks connection/table availability; migration integrity is checked
+  by the explicit migration command. Evidence paths are not verified by the API.
+- Filtered list pagination is implemented. Historical comparison, statistical
+  alerts and automatic orchestration are still future work.
+
+Troubleshooting: for 503, check `bash scripts/postgres.sh status`, export the correct
+DSN in the API terminal, and run `monitoring.cli migrate`. For 409, GET the existing
+execution and compare its status and identity rather than editing persisted evidence.
+For 422, read the field error; numeric strings and booleans are not valid counts.
+Database tests skip without `PIPELINEIQ_TEST_DATABASE_URL`; that is not a passing
+PostgreSQL verification. Use the separate `pipelineiq_test` database.
+
+Your exercise: submit one saved event twice, inspect its receipt and GET result,
+then predict what happens if a separate copy changes duration while keeping a
+terminal run's identity. Answer: unchanged submissions retain one execution; the
+changed terminal copy conflicts (409) and leaves the original untouched.
+
+Further reading: [architecture](architecture.md), [storage setup and retention](monitoring-storage.md),
+[HTTP API guide](monitoring-api.md), and [event contract](monitoring-events.md).
+Next proposed batch: **B4 — Airflow orchestration, retries and failure reporting**.

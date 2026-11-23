@@ -76,7 +76,7 @@ reports have their own version: `contract_version` is **not** the retail report'
 | `error_summary` | Required nonempty text for failed executions; null for other statuses |
 
 Map keys use lowercase snake_case, at most 64 characters, beginning with a letter.
-Counts and duration must fit a signed 64-bit integer, anticipating PostgreSQL
+Counts and duration must fit a signed 64-bit integer, matching B2 PostgreSQL
 storage. Booleans, numeric strings and fractional counts are rejected rather than
 coerced. The validator returns a detached copy; changing it does not mutate the
 producer's report. Durations are independently measured elapsed time and are not
@@ -158,9 +158,9 @@ when studying invocation behavior, but exclude it when summing newly processed r
 or revenue. Reused counts describe the original outputs. Its short duration measures
 verification, not a new processing job; exclude it from processing-time baselines.
 
-No database collector, HTTP API, scheduler or history report is included in B1.
-B2 now adds PostgreSQL persistence, migrations and retention assumptions; see the
-[storage guide](monitoring-storage.md).
+B1 remains the file-export boundary. B2 adds PostgreSQL persistence and B3 adds
+HTTP submission/query routes for the same contract; see the [storage guide](monitoring-storage.md)
+and [API guide](monitoring-api.md). Scheduler and history comparison remain B4/B5.
 
 ## Verification and exercise
 

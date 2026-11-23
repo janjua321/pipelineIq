@@ -4,11 +4,12 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: Milestone A and monitoring batches B1–B2 implemented.** Synthetic retail CSVs flow through raw Bronze
+**Current scope: Milestone A and monitoring batches B1–B3 implemented.** Synthetic retail CSVs flow through raw Bronze
 Delta tables into typed, validated Silver tables and quarantine with reason codes.
 The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation.
 B1 translates those reports into validated, generic monitoring events without starting Spark.
-B2 persists events and named metrics in PostgreSQL. The API is next; orchestration, ML and AI follow later.
+B2 persists events and named metrics in PostgreSQL. B3 adds a local FastAPI submission/query API.
+Airflow orchestration, history comparison, ML and AI follow later.
 See [the monitoring contract](docs/monitoring-events.md) for B1's fields and semantics.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
 
@@ -462,6 +463,9 @@ while local Delta outputs are reproduced with the commands above.
 - `monitoring/events.py`: versioned, generic execution-event validation and JSON serialization.
 - `pipelines/monitoring.py`: retail report adapter and standalone event-export CLI.
 - `docs/monitoring-events.md`: event fields, identity, denominators and adapter semantics.
+- `monitoring/store.py`, `monitoring/cli.py`, `monitoring/migrations/`: PostgreSQL transactions, queries and versioned DDL.
+- `api/app.py`, `api/models.py`, `scripts/api.sh`: local HTTP submission/query API and typed contract.
+- `docs/monitoring-storage.md`, `docs/monitoring-api.md`: setup, lifecycle, errors, retention and verification.
 - `tests/integration/test_spark_smoke.py`: exercises and checks real persistence.
 - `tests/integration/test_bronze.py`: verifies source preservation and ingestion failures.
 - `tests/integration/test_silver.py`: verifies validation, deterministic selection, and saved outcomes.
@@ -473,9 +477,9 @@ while local Delta outputs are reproduced with the commands above.
 - `.python-version`, `.gitignore`: interpreter choice and generated-file exclusions.
 - `docs/PROGRESS.md`: decisions, measured results, blockers, and next batch.
 
-Milestone B is underway with B1's generic event schema and retail adapter.
-B2 adds PostgreSQL storage, migrations and documented retention assumptions. The next batch is B3: the monitoring API.
-The API, Airflow orchestration and history report follow in B3–B5.
+Milestone B1–B3 are implemented: generic events, PostgreSQL storage and a local API.
+Next is B4 (Airflow orchestration), followed by B5 (history comparison).
+See the [architecture](docs/architecture.md) for subsystem boundaries.
 
 **Exercise:** inspect `data/quarantine/a2-incident-001` and find a row with multiple
 reason codes. Explain why adding per-reason counts can overcount bad rows, while
@@ -619,3 +623,54 @@ instead of pip. No new Spark execution is needed to submit saved events.
 See [the storage guide](docs/monitoring-storage.md) for migrations, lifecycle conflicts,
 retention, tests and shutdown. Identical submission is unchanged; running may become
 terminal; conflicting evidence is rejected. The database and generated events are ignored.
+
+
+## Local monitoring API (B3)
+
+Install the optional API dependencies alongside the existing environment:
+
+```bash
+UV_CACHE_DIR="$PWD/.cache/uv" .tools/bootstrap/bin/uv pip install --python .venv/bin/python -e '.[dev,monitoring,api]'
+# Or, when pip is available in your virtual environment:
+# .venv/bin/python -m pip install -e '.[dev,monitoring,api]'
+bash scripts/postgres.sh start
+export PIPELINEIQ_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq"
+.venv/bin/python -m monitoring.cli migrate
+bash scripts/api.sh
+```
+
+Open `http://127.0.0.1:8000/docs` to inspect and try the typed API. From another terminal:
+
+```bash
+curl --fail-with-body http://127.0.0.1:8000/health/ready
+for event in data/monitoring/events/retail_transactions/*.json; do
+  curl --fail-with-body -H 'Content-Type: application/json' --data-binary "@$event" \
+    http://127.0.0.1:8000/v1/runs
+done
+curl --fail-with-body 'http://127.0.0.1:8000/v1/runs?pipeline_id=retail_transactions&limit=20'
+```
+
+Submission returns 201 for a new execution, 200 for an update/identical redelivery,
+and 409 for conflicting evidence. GET supports exact execution lookup and filtered,
+bounded lists. Database outages produce 503; invalid events produce 422. The
+[API guide](docs/monitoring-api.md) covers all routes, status codes and examples.
+The service is for trusted local development, bound to loopback, without public
+authentication or deployment configuration. It never starts Spark or modifies Delta.
+
+Run the full suite with real PostgreSQL enabled:
+
+```bash
+export PIPELINEIQ_TEST_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq_test"
+bash scripts/test.sh
+```
+
+Without a test DSN the database-dependent tests skip. Use the separate `_test`
+database; fixtures clean only their generated test namespace. See the progress log
+for measured results. Ctrl-C stops the API; `bash scripts/postgres.sh stop` stops
+the dedicated database and preserves its files.
+
+Verified on 2026-11-23: **146 tests passed** with real PostgreSQL and Spark enabled
+(no skips), plus a live HTTP demonstration and database-restart persistence check.
+There was one Starlette/HTTPX test-client deprecation warning. The database held
+three measured executions (healthy, incident, reused) over two processed batches.
+The [progress log](docs/PROGRESS.md) records the detailed learning notes and results.
