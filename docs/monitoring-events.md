@@ -149,8 +149,8 @@ Invalid updates and failed publication leave the previous exported file intact.
 
 This local exporter is single-writer tooling, not an ordered event store: if you
 explicitly export an older snapshot later, it can replace a newer one. It does not
-keep an audit history or resolve concurrent/stale updates. B2 must define database
-upsert, conflict and lifecycle-ordering behavior before accepting concurrent submissions.
+keep an audit history or resolve concurrent/stale updates. B2 implements database identity and lifecycle rules separately from this file exporter;
+see [monitoring-storage.md](monitoring-storage.md).
 
 A *pipeline rerun* has a new run UUID. If A6 reuses a completed batch, its event
 retains `status = reused` and `reused_from_run_id`. Count it as a separate execution
@@ -159,7 +159,8 @@ or revenue. Reused counts describe the original outputs. Its short duration meas
 verification, not a new processing job; exclude it from processing-time baselines.
 
 No database collector, HTTP API, scheduler or history report is included in B1.
-The next batch is B2: PostgreSQL persistence, migrations and retention assumptions.
+B2 now adds PostgreSQL persistence, migrations and retention assumptions; see the
+[storage guide](monitoring-storage.md).
 
 ## Verification and exercise
 

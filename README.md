@@ -4,11 +4,11 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: Milestone A and monitoring batch B1 implemented.** Synthetic retail CSVs flow through raw Bronze
+**Current scope: Milestone A and monitoring batches B1–B2 implemented.** Synthetic retail CSVs flow through raw Bronze
 Delta tables into typed, validated Silver tables and quarantine with reason codes.
 The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation.
 B1 translates those reports into validated, generic monitoring events without starting Spark.
-PostgreSQL persistence, monitoring services, orchestration, ML, and AI are future work.
+B2 persists events and named metrics in PostgreSQL. The API is next; orchestration, ML and AI follow later.
 See [the monitoring contract](docs/monitoring-events.md) for B1's fields and semantics.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
 
@@ -474,7 +474,7 @@ while local Delta outputs are reproduced with the commands above.
 - `docs/PROGRESS.md`: decisions, measured results, blockers, and next batch.
 
 Milestone B is underway with B1's generic event schema and retail adapter.
-The next batch is B2: PostgreSQL storage, migrations and retention assumptions.
+B2 adds PostgreSQL storage, migrations and documented retention assumptions. The next batch is B3: the monitoring API.
 The API, Airflow orchestration and history report follow in B3–B5.
 
 **Exercise:** inspect `data/quarantine/a2-incident-001` and find a row with multiple
@@ -582,7 +582,7 @@ text. A reused run keeps its separate execution ID and original-run reference;
 its counts and revenue describe reused outputs and must not be added as new work.
 
 The [full contract documentation](docs/monitoring-events.md) explains every field,
-source mapping, lifecycle and limitation. PostgreSQL collection is the next batch.
+source mapping, lifecycle and limitation. PostgreSQL collection is implemented in B2; see the storage guide below.
 
 Executed on 2026-11-21: 65 focused B1 tests passed, and the full suite passed
 119 tests in 69.52 seconds. All three saved A6 demonstration reports exported
@@ -594,3 +594,28 @@ build included both the generic monitor and retail adapter.
 .venv/bin/python -m pytest -q tests/unit/test_monitoring_events.py tests/unit/test_monitoring_adapter.py
 bash scripts/test.sh
 ```
+
+
+## PostgreSQL monitoring storage (B2)
+
+Install the monitoring extra and start the dedicated local database (PostgreSQL
+server tools must be installed; verified here with PostgreSQL 18.6):
+
+```bash
+.venv/bin/python -m pip install -e '.[dev,monitoring]'
+bash scripts/postgres.sh start
+export PIPELINEIQ_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq"
+.venv/bin/python -m monitoring.cli migrate
+for event in data/monitoring/events/retail_transactions/*.json; do
+  .venv/bin/python -m monitoring.cli submit --event "$event"
+done
+.venv/bin/python -m monitoring.cli list --pipeline-id retail_transactions
+```
+
+For this checkout's uv-based environment, use `.tools/bootstrap/bin/uv pip install
+--python .venv/bin/python -e '.[dev,monitoring]'` with the existing cache configuration
+instead of pip. No new Spark execution is needed to submit saved events.
+
+See [the storage guide](docs/monitoring-storage.md) for migrations, lifecycle conflicts,
+retention, tests and shutdown. Identical submission is unchanged; running may become
+terminal; conflicting evidence is rejected. The database and generated events are ignored.

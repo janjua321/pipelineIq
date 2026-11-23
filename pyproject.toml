@@ -15,11 +15,18 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest==9.2.0"]
+monitoring = ["psycopg[binary]==3.3.9"]
 
 [tool.setuptools.packages.find]
 include = ["pipelines", "pipelines.*", "monitoring", "monitoring.*"]
 
+[tool.setuptools.package-data]
+monitoring = ["migrations/*.sql"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
-markers = ["integration: starts a real local Spark JVM and reads/writes Delta"]
+markers = [
+    "integration: starts a real local Spark JVM and reads/writes Delta",
+    "postgres: requires PIPELINEIQ_TEST_DATABASE_URL and a dedicated PostgreSQL test database",
+]

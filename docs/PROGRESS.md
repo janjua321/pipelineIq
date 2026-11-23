@@ -1,16 +1,18 @@
 # PipelineIQ progress
 
-Current milestone: B1 — Generic monitoring event schema and retail adapter implemented and verified.
+Current milestone: B2 — PostgreSQL storage implemented and verified; B3 API next in this authorized session.
 Milestone A1–A6 remains complete.
-Next proposed batch: B2 — PostgreSQL execution/quality storage, migrations and retention assumptions.
+Next batch in this session: B3 — FastAPI submission and query endpoints.
 
-Last learning-notes update: 2026-11-21. Read the learning checkpoint below to
+Last learning-notes update: 2026-11-23. Read the learning checkpoint below to
 understand the system, then use the verification sections to see what actually ran.
 Commands in this document assume you are in the repository root. Generated files
 exist on the development machine but are not on GitHub; on a fresh clone, follow
 the [README setup and source-generation instructions](../README.md) first.
 
 Authorization and Git:
+
+- On 2026-11-23 the developer explicitly authorized completing B2 and B3 together, with documentation updates and the established commit/push workflow.
 
 - On 2026-11-20 the developer requested finishing Milestone A and making the necessary commits.
 - On 2026-11-21 the developer authorized continuing Milestone B with documentation and GitHub commits.
@@ -307,3 +309,41 @@ Documentation-only follow-up (2026-11-21): expanded this progress file with the
 learning checkpoint, measured example, reading order and exercises. Application
 code is unchanged. The 119-test result above is from B1 implementation verification;
 the suite was not rerun for this prose-only update.
+
+
+**B2 checkpoint — PostgreSQL storage (2026-11-23)**
+
+B2 adds a durable, queryable home for B1 events. `monitoring.store.EventStore.submit`
+validates an event, uses its `(pipeline_id, run_id)` key to identify an execution,
+and writes the execution plus named row/quality measurements in one transaction.
+A transaction means either every write commits or none of them do. The full event
+is retained as JSONB for exact retrieval; metric tables support later SQL analysis.
+
+`monitoring/migrations/001_executions.sql` defines the tables. `monitoring.cli migrate`
+applies it once and records its checksum. Re-running migration does nothing; editing
+an applied file is rejected. Future changes must use a new numbered migration.
+
+The lifecycle rule is deliberate: identical submission is unchanged; running can
+become terminal; terminal changes and changed running snapshots are conflicts.
+B1 has no revision number, so accepting changing running snapshots could let stale
+messages overwrite newer evidence. Reused run references may arrive before their
+original event, so that reference is not a foreign key.
+
+Executed: 9 real PostgreSQL tests passed in 0.43s, covering migrations, concurrency,
+rollback, replay references, nulls, pagination and parameterized filtering. The
+existing three demonstration events were stored and read back unchanged. Each
+repeat submission returned unchanged. Full regression testing follows with B3.
+PostgreSQL 18.6 and Psycopg 3.3.9 were used. The project database uses a private Unix
+socket, with no TCP listener. No system database service was changed.
+
+An existing four-space indentation before the opening docstring in pipelines/replay.py
+prevented imports. Its original contents were saved to .cache/replay-before-b2.py,
+and the first line was restored to valid module indentation; no pipeline logic changed.
+
+Read [the storage guide](monitoring-storage.md) for setup, commands, table purposes,
+retention and limitations. Retention is currently indefinite and manual: there is
+no scheduled deletion. Test fixtures use a separate database ending in _test and
+clean up only their generated pipeline namespace.
+
+Exercise: submit one event twice, then query its quality rows. Explain why one
+execution and one set of quality measurements remain. Next: B3, already authorized.
