@@ -1,8 +1,8 @@
 # PipelineIQ progress
 
-Current milestone: B4 Airflow orchestration implemented and verified; B5 history checkpoint follows.
+Current milestone: Milestone B complete through B5; local implementation and demonstrations verified.
 Milestone A1–A6 remains complete.
-Next checkpoint: B5 — Execution history and comparisons.
+Next proposed batch: C1 — Deterministic healthy/incident history for evaluation, after Milestone B review.
 
 Last learning-notes update: 2026-11-24. Read the learning checkpoint below to
 understand the system, then use the verification sections to see what actually ran.
@@ -27,6 +27,8 @@ Authorization and Git:
 - 32565ff: B2 PostgreSQL storage, migrations, tests and learning documentation, pushed.
 - 1836e37: B3 validated HTTP API and documentation, pushed.
 - On 2026-11-24 the developer authorized completing the rest of Milestone B and updating documentation.
+- 3514ac5: B4 Airflow orchestration, retry/failure checks and learning documentation, pushed.
+- B5 is the final Milestone B checkpoint; its commit contains this progress update.
 - Keep committing/pushing each authorized completed batch with updated progress and tests.
 - PIPELINEIQ_AGENT_BRIEF.md is local, ignored, and never tracked. Generated data,
   environments, runtimes, and caches remain ignored.
@@ -46,6 +48,8 @@ Completed:
   deterministic atomic file export, source/replay evidence, CLI, tests and contract documentation.
 - B2: PostgreSQL execution/metric tables, checksum migrations, transactional writes, lifecycle conflicts, local setup and queries.
 - B3: FastAPI submission, exact lookup, filtered pagination, readiness, strict input validation and OpenAPI docs.
+- B4: manual Airflow DAG, processing/delivery retries, retained failure events, final outcome verification and real DAG checks.
+- B5: PostgreSQL history report, version-aware comparisons, explicit unknown coverage and reuse-safe processing totals.
 
 **Learning checkpoint: understand what we have built**
 
@@ -272,12 +276,13 @@ Known limits:
 - JVM startup precedes the run lifecycle and its duration measurement. A JVM startup failure
   does not create a pipeline report. Ordinary in-run exceptions do create failed reports.
 - Deduplication is within a batch. Generator data uses one fixed UTC day. PostgreSQL
-  collection and the local API are implemented; orchestration, ML, RAG and the dashboard are future work.
+  collection, the API, local Airflow orchestration and history reporting are implemented;
+  statistical checks, ML, RAG and the dashboard remain future work.
 - B1 exporter is manual single-writer tooling, with no ordering of stale/concurrent updates
   and no historical snapshot archive. B2 applies stricter lifecycle/conflict rules when persisting to PostgreSQL.
 - Evidence paths are references, not proof of publication or output integrity. A6 completion
   manifests remain authoritative. Monitoring export does not re-read Delta or verify artifacts.
-- B1–B3 are verified; developer hands-on review is pending. B4–B5 are not implemented.
+- B1–B5 are verified; developer hands-on review is pending. Milestone C has not started.
 
 **Practice when returning to this project**
 
@@ -306,8 +311,7 @@ Common mistakes to recognize:
 - Assuming the export loop starts a collector: it manually writes local JSON snapshots.
 
 B2 and B3 are now implemented; their learning notes follow below.
-Next proposed batch: **B4 — Airflow orchestration, retries and failure reporting.**
-B5 will add a history comparison report.
+B4 and B5 are now implemented; their learning checkpoints follow below.
 
 Documentation-only follow-up (2026-11-21): expanded this progress file with the
 learning checkpoint, measured example, reading order and exercises. Application
@@ -454,7 +458,7 @@ Executed verification, not suggested results:
 
 These are three executions over two processed batches. The reused row describes
 existing output; it is not another 80 newly processed rows or another 7,686.31 in
-revenue. B5's future history report must preserve that distinction.
+revenue. B5's implemented history report preserves that distinction.
 
 Dependencies added as optional extras: Psycopg 3.3.9 for storage; FastAPI 0.165.0,
 Pydantic 2.14.4 and Uvicorn 0.54.0 for the API; HTTPX 0.28.1 for tests. Direct pins
@@ -476,7 +480,7 @@ Practical limits to remember:
 - Readiness checks connection/table availability; migration integrity is checked
   by the explicit migration command. Evidence paths are not verified by the API.
 - Filtered list pagination is implemented. Historical comparison, statistical
-  alerts and automatic orchestration are still future work.
+  alerts remain future work. B4 now adds a manual Airflow DAG and B5 adds a separate history report.
 
 Troubleshooting: for 503, check `bash scripts/postgres.sh status`, export the correct
 DSN in the API terminal, and run `monitoring.cli migrate`. For 409, GET the existing
@@ -492,7 +496,7 @@ changed terminal copy conflicts (409) and leaves the original untouched.
 
 Further reading: [architecture](architecture.md), [storage setup and retention](monitoring-storage.md),
 [HTTP API guide](monitoring-api.md), and [event contract](monitoring-events.md).
-Next proposed batch: **B4 — Airflow orchestration, retries and failure reporting**.
+B4 and B5 checkpoints follow; current next batch is C1 after review.
 
 
 **B4 checkpoint — Airflow orchestration (2026-11-24)**
@@ -544,4 +548,122 @@ publication. Then explain why retrying event publication does not rerun Spark.
 Known limits: tasks share one filesystem; abrupt kills can leave a running report
 or no event; receipts/events are retained without automatic cleanup. A6 manifests
 remain authoritative for data publication. Backfill date-to-input mapping and
-continuous scheduling need an explicit input-arrival policy. B5 follows next.
+continuous scheduling need an explicit input-arrival policy. B5 is documented below.
+
+**B5 checkpoint — history report and completed Milestone B (2026-11-24)**
+
+B5 makes stored executions comparable without restarting the pipeline. The entry
+point is `.venv/bin/python -m monitoring.history`. `history()` queries one pipeline's
+latest bounded window in one PostgreSQL statement; `compare()` builds chronological
+comparisons and version-group totals; `markdown()` renders the readable report.
+JSON output exposes the same structured measurements for later tooling.
+
+```bash
+export PIPELINEIQ_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq"
+.venv/bin/python -m monitoring.history --pipeline-id retail_transactions --limit 20
+mkdir -p data/history
+.venv/bin/python -m monitoring.history --pipeline-id retail_transactions --limit 100 \
+  --format json > data/history/retail.json
+.venv/bin/python -m monitoring.history --pipeline-id retail_transactions --limit 100 \
+  --format markdown > data/history/retail.md
+```
+
+Read [monitoring/history.py](../monitoring/history.py), [the history guide](history.md),
+and [history unit tests](../tests/unit/test_history.py) together. The code deliberately
+separates retrieving a window from comparing its events, so the arithmetic can be
+checked without a database. The [database history test](../tests/integration/test_history_store.py)
+checks actual query bounds and truncation.
+
+Key concepts:
+
+| Concept | Meaning in B5 |
+| --- | --- |
+| Window | The latest N executions (default 20, maximum 1000), with an explicit truncation flag |
+| Eligible processing run | Status completed or completed_with_warnings; reused, failed and running are displayed but excluded from totals/baselines |
+| Version group | Contract, producer schema and policy versions; changes start a separate sequence |
+| Comparison | Current eligible run minus preceding eligible run in that window/group |
+| Coverage | Known and unknown run counts beside each aggregated measurement |
+| Weighted quality rate | Sum of affected rows divided by sum of their declared populations |
+
+Unknown counts remain null; an all-unknown total is null rather than zero. If only
+some runs measured a metric, the known subtotal is accompanied by unknown_runs.
+A zero combined denominator produces a null rate. Quality categories can overlap,
+so their totals must not be added as distinct quarantined rows. Rate differences
+are proportions: +0.25 is +25 percentage points. These differences are observations,
+not alerts or causal explanations.
+
+Comparisons never use a reused run as the next baseline. A failure's partial counts
+are excluded from successful-processing totals, so the report does not claim to
+measure all attempted I/O. Missing version properties form a null-version group;
+semantic stability then remains the producer's responsibility. Generic properties
+such as currency-valued revenue are not summed because the contract does not define
+their units. Original events remain available through B3/CLI lookup.
+
+Measured development history at this checkpoint:
+
+| Batch | Status | Input | Valid | Quarantined |
+| --- | --- | ---: | ---: | ---: |
+| a2-healthy-001 | completed | 100 | 100 | 0 |
+| a2-incident-001 | completed_with_warnings | 80 | 56 | 24 |
+| a2-incident-001 | reused | 80 | 56 | 24 |
+| b4-healthy-001 | completed | 20 | 20 | 0 |
+| b4-incident-001 | completed_with_warnings | 20 | 15 | 5 |
+
+The report returned five executions from a limit of 100, with truncated=false.
+There are four eligible processing runs, so totals are **220 input, 191 valid and
+29 quarantined**, not totals obtained by adding the reused row. Combined quarantine
+rate is **29/220 = 0.131818...**. The latest incident's quarantine rate increased
+from 0 to **5/20 = 0.25** relative to the preceding healthy run. Its missing-customer
+rate is 4/20 = 0.20 and duplicate rate is 2/20 = 0.10; one row overlaps those defects,
+which is why 4 + 2 exceeds the five quarantined rows.
+
+Saved readable/JSON artifacts: data/history/retail.md and data/history/retail.json.
+They are local, ignored, measured outputs. Further executions change later reports;
+these numbers are the recorded 2026-11-24 checkpoint, not fixed application constants.
+Failure/recovery DAG demonstrations used the separate test database, so their
+executions are not mixed into this development-history table.
+
+Final verification for completed Milestone B:
+
+- **157 tests passed, 1 warning in 73.72s**, exit 0, no skips, with Spark and real
+  PostgreSQL enabled. Log: .cache/milestone-b-tests.log.
+- The warning remains the previously documented Starlette/HTTPX test-client
+  deprecation. No dependency warning was hidden or test weakened to suppress it.
+- Separately, the isolated Airflow structural check and all four real DAG scenarios
+  passed. These are additional checks, not counted among the 157 pytest tests.
+- Healthy and incident development DAGs both succeeded and published their actual
+  reports. Processing success/reuse/failure and delivery are independently visible.
+- History checks cover weighted rates, replay/failure exclusion, null/empty values,
+  version boundaries, duplicate identity rejection, safe rendering and real SQL bounds.
+- Offline package build succeeded with the new worker and history modules. Airflow
+  remains separately installed, and the DAG/scripts are run from the checkout.
+- Documentation links, shell snippets/scripts and package exclusions were checked.
+- B4 commit: 3514ac5. B5's final checkpoint commit contains this documentation update.
+
+To rerun the verification, start/migrate the project databases first:
+
+```bash
+bash scripts/postgres.sh start
+export PIPELINEIQ_TEST_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq_test"
+bash scripts/test.sh
+bash scripts/airflow.sh db migrate
+bash scripts/airflow.sh python tests/airflow/check_dag.py
+.venv/bin/python tests/airflow/check_workflow.py
+```
+
+The test workflow keeps its own generated evidence under data/airflow-checks and
+uses a database explicitly ending in _test. The regular pytest suite does not
+require Airflow in the project environment; the separate Airflow checks do.
+
+Your exercise: read the five-row table and predict the processed input total before
+looking at the answer. Then explain why the reused run changes execution_count but
+not that total. Finally compare the incident's +25-percentage-point quarantine
+change with an anomaly alert: the first is arithmetic; the second requires a
+baseline and decision policy that Milestone C will introduce.
+
+Milestone B is complete as a local, tested implementation. The Airflow DAG is manual;
+continuous scheduling/backfill input mapping, shared-host execution, full crash
+reconciliation and automated cleanup remain explicit limits. The API remains local
+and unauthenticated. The history report is bounded and does not perform ML or RAG.
+Next proposed batch: **C1 — Deterministic healthy/incident history for evaluation**,
+after the developer's Milestone B review. No Milestone C code was added.

@@ -84,8 +84,10 @@ Queries support optional pipeline/status filters and `limit` 1–100 (default 20
 `offset` 0–100000. Ordering is start time descending, then pipeline and run ID.
 Offset pages are deterministic on a fixed dataset, but concurrent insertions can
 shift page boundaries. No cross-request snapshot or cursor guarantee is made.
-No cross-run totals are computed here; a later history report must exclude reused
-executions from newly processed totals and processing-time baselines.
+The basic store queries do not compute totals. B5's [history report](history.md)
+uses a separate bounded query and excludes reused/failed/running executions from
+successful-processing totals and comparison baselines. B4's Airflow publication
+task submits through this same store, retaining orchestration-run/attempt properties.
 
 ## Migration and retention policy
 

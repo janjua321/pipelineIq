@@ -4,13 +4,13 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: Milestone A and monitoring batches B1–B4 implemented.** Synthetic retail CSVs flow through raw Bronze
+**Current scope: Milestones A and B implemented (A1–A6, B1–B5).** Synthetic retail CSVs flow through raw Bronze
 Delta tables into typed, validated Silver tables and quarantine with reason codes.
 The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation.
 B1 translates those reports into validated, generic monitoring events without starting Spark.
 B2 persists events and named metrics in PostgreSQL. B3 adds a local FastAPI submission/query API.
 B4 adds a local Airflow DAG with processing retries and failure publication.
-History comparison, ML and AI follow later.
+B5 adds a bounded execution-history report. Statistical checks, ML and AI follow in later milestones.
 See [the monitoring contract](docs/monitoring-events.md) for B1's fields and semantics.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
 
@@ -476,10 +476,13 @@ while local Delta outputs are reproduced with the commands above.
 - `scripts/silver.sh`: selects the project environment and runs Silver/quarantine commands.
 - `pyproject.toml`: package metadata, dependency pins, and pytest configuration.
 - `.python-version`, `.gitignore`: interpreter choice and generated-file exclusions.
+- `orchestration/dags/retail_pipeline.py`, `orchestration/worker.py`: DAG and isolated processing/publication bridge.
+- `monitoring/history.py`: bounded comparisons, version groups and processing totals.
+- `docs/orchestration.md`, `docs/history.md`: setup, semantics and exercises for B4/B5.
 - `docs/PROGRESS.md`: decisions, measured results, blockers, and next batch.
 
-Milestone B1–B3 are implemented: generic events, PostgreSQL storage and a local API.
-Next is B4 (Airflow orchestration), followed by B5 (history comparison).
+Milestone B1–B5 are implemented: generic events, PostgreSQL storage, a local API,
+Airflow orchestration and a history report. Next is C1: deterministic evaluation history.
 See the [architecture](docs/architecture.md) for subsystem boundaries.
 
 **Exercise:** inspect `data/quarantine/a2-incident-001` and find a row with multiple
@@ -699,3 +702,45 @@ See the [orchestration guide](docs/orchestration.md) for the task graph, retaine
 artifacts, startup failures, environment choices, limitations and real DAG checks.
 Airflow metadata is local SQLite under ignored `data/airflow`; monitoring events
 remain in PostgreSQL. This local test workflow does not require a persistent scheduler.
+
+
+## Run history and comparisons (B5)
+
+```bash
+export PIPELINEIQ_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq"
+.venv/bin/python -m monitoring.history --pipeline-id retail_transactions --limit 20
+mkdir -p data/history
+.venv/bin/python -m monitoring.history --pipeline-id retail_transactions --limit 100 \
+  --format json > data/history/retail.json
+.venv/bin/python -m monitoring.history --pipeline-id retail_transactions --limit 100 \
+  --format markdown > data/history/retail.md
+```
+
+The report shows executions and compares each successful processing run with the
+preceding successful run in the same contract/schema/policy group. Reused, failed
+and running executions remain visible but do not inflate processing totals or
+become comparison baselines. Unknown values stay unknown. Quality summaries divide
+summed counts by summed denominators. Window size and truncation are explicit;
+these are bounded comparisons, not all-time totals or anomaly alerts.
+
+See [the history guide](docs/history.md) for coverage, version boundaries and examples.
+At the 2026-11-24 checkpoint, five development executions represented four successful
+processing runs plus one reuse: **220 input, 191 valid, 29 quarantined rows** in the
+processing totals. The new incident run had 20 input, 15 valid and 5 quarantined rows.
+Further invocations will add execution reports, so your later history may differ.
+
+Final Milestone B verification: **157 tests passed in 73.72s**, no skips, with the
+existing Starlette/HTTPX test-client deprecation warning. Separately, four real
+Airflow/Spark/PostgreSQL scenarios passed: healthy, reused, permanent failure after
+retry, and successful recovery after retry. To reproduce the Airflow checks:
+
+```bash
+export PIPELINEIQ_TEST_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq_test"
+bash scripts/airflow.sh python tests/airflow/check_dag.py
+.venv/bin/python tests/airflow/check_workflow.py
+```
+
+These checks retain generated evidence in ignored data directories and use the
+separate test database. The normal `scripts/test.sh` suite tests the worker/history
+without requiring Airflow in the project environment; the separate commands above
+verify the real DAG. Milestone C has not started.

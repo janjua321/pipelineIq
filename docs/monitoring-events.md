@@ -160,7 +160,9 @@ verification, not a new processing job; exclude it from processing-time baseline
 
 B1 remains the file-export boundary. B2 adds PostgreSQL persistence and B3 adds
 HTTP submission/query routes for the same contract; see the [storage guide](monitoring-storage.md)
-and [API guide](monitoring-api.md). Scheduler and history comparison remain B4/B5.
+and [API guide](monitoring-api.md). B4 now publishes events from Airflow task attempts,
+adding orchestration_run_id and orchestration_attempt properties. B5 compares stored
+events; see the [orchestration](orchestration.md) and [history](history.md) guides.
 
 ## Verification and exercise
 

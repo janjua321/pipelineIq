@@ -125,5 +125,7 @@ response to posting a changed terminal event with the same identity (409). Then
 query `status=reused` and explain why its revenue is not new processing. Preserve
 original exported files; use a separate copy for intentional invalid examples.
 
-Next batch: B4 — Airflow orchestration, retries and failure reporting. B5 will add
-a history comparison report; neither is part of B3.
+B4 [Airflow orchestration](orchestration.md) and B5 [history reporting](history.md)
+are now implemented as separate entry points. The DAG publishes directly through
+the same store; it does not require the HTTP service. B5 is a CLI report, not a
+new HTTP endpoint. Next is C1 after Milestone B review.
