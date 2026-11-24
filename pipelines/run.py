@@ -2,11 +2,12 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pyspark.sql import SparkSession, functions as F
 
@@ -21,13 +22,16 @@ SCHEMA_VERSION = "1"
 POLICY_VERSION = "retail-v1"
 
 
-def save_json(path: Path, value: dict) -> None:
-    """Publish a complete JSON document using a same-directory atomic rename."""
+def save_json(path: Path, value: dict, *, exclusive: bool = False) -> None:
+    """Publish complete JSON atomically; exclusive creation refuses an existing path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4()}.tmp")
     try:
         temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        if exclusive:
+            os.link(temporary, path)  # Atomic create-if-absent; concurrent UUID reuse cannot overwrite evidence.
+        else:
+            temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -75,17 +79,21 @@ def execute_attempt(spark: SparkSession, source: Path, batch_id: str, root: Path
     report["status"] = "completed_with_warnings" if result.quarantined_count else "completed"
 
 
-def run_pipeline(spark: SparkSession, source: Path, batch_id: str, root: Path = Path("data/pipeline")) -> dict:
+def run_pipeline(spark: SparkSession, source: Path, batch_id: str, root: Path = Path("data/pipeline"),
+                 *, run_id: str | None = None) -> dict:
     root = root.resolve()
+    execution_id = str(uuid4()) if run_id is None else str(UUID(run_id))
+    if (root / "metrics" / f"{execution_id}.json").exists():
+        raise ValueError("Execution run_id already has a report; choose a new UUID")
     started = time.perf_counter()
-    report = dict(run_id=str(uuid4()), pipeline_id="retail_transactions", batch_id=batch_id,
+    report = dict(run_id=execution_id, pipeline_id="retail_transactions", batch_id=batch_id,
                   started_at=datetime.now(UTC).isoformat(), finished_at=None, duration_ms=None,
                   status="running", schema_version=SCHEMA_VERSION, policy_version=POLICY_VERSION,
                   source_path=str(source.resolve()), source_sha256=None,
                   input_count=None, valid_count=None, quarantined_count=None, duplicate_count=None,
                   null_customer_id_count=None, invalid_amount_count=None, error_summary=None)
     report_path = root / "metrics" / f"{report['run_id']}.json"
-    save_json(report_path, report)
+    save_json(report_path, report, exclusive=True)
     try:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", batch_id):
             raise ValueError("Invalid batch_id")

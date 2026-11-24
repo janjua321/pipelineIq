@@ -1,10 +1,10 @@
 # PipelineIQ progress
 
-Current milestone: B1–B3 implemented; PostgreSQL persistence and the local monitoring API are verified.
+Current milestone: B4 Airflow orchestration implemented and verified; B5 history checkpoint follows.
 Milestone A1–A6 remains complete.
-Next proposed batch: B4 — Airflow orchestration, retries and failure reporting.
+Next checkpoint: B5 — Execution history and comparisons.
 
-Last learning-notes update: 2026-11-23. Read the learning checkpoint below to
+Last learning-notes update: 2026-11-24. Read the learning checkpoint below to
 understand the system, then use the verification sections to see what actually ran.
 Commands in this document assume you are in the repository root. Generated files
 exist on the development machine but are not on GitHub; on a fresh clone, follow
@@ -25,7 +25,8 @@ Authorization and Git:
 - [e97ca7b](https://github.com/janjua321/pipelineIq/commit/e97ca7b): B1 monitoring contract,
   retail adapter, tests and documentation, pushed.
 - 32565ff: B2 PostgreSQL storage, migrations, tests and learning documentation, pushed.
-- B3 is the current checkpoint; its commit contains this progress update.
+- 1836e37: B3 validated HTTP API and documentation, pushed.
+- On 2026-11-24 the developer authorized completing the rest of Milestone B and updating documentation.
 - Keep committing/pushing each authorized completed batch with updated progress and tests.
 - PIPELINEIQ_AGENT_BRIEF.md is local, ignored, and never tracked. Generated data,
   environments, runtimes, and caches remain ignored.
@@ -492,3 +493,55 @@ changed terminal copy conflicts (409) and leaves the original untouched.
 Further reading: [architecture](architecture.md), [storage setup and retention](monitoring-storage.md),
 [HTTP API guide](monitoring-api.md), and [event contract](monitoring-events.md).
 Next proposed batch: **B4 — Airflow orchestration, retries and failure reporting**.
+
+
+**B4 checkpoint — Airflow orchestration (2026-11-24)**
+
+The DAG in `orchestration/dags/retail_pipeline.py` coordinates three tasks:
+`process_batch` → `publish_events` → `verify_outcome`, with processing also a direct
+prerequisite of verification. Publication runs with all_done so failed processing
+can still be reported. Verification requires both processing and publication to
+succeed; an all_done reporting task cannot hide upstream failure.
+
+The worker runs in the original pipeline environment, using a fresh pipeline UUID
+for each processing attempt. The runner accepts that caller-supplied UUID and
+atomically refuses an existing report. Attempt events and receipts are retained
+under data/orchestration/<hash-of-run-key>/attempt-<number>. Identical delivery is
+safe through the PostgreSQL store. Processing retries once; publication retries
+twice. Missing startup measurements stay null, with failure_stage=worker_startup.
+
+Airflow 3.4.0/provider 1.21.0 are installed separately in .tools/airflow-venv using
+the official Python 3.12 constraints. The initial provider 1.22.0 pin conflicted
+with those constraints; aligning it to 1.21.0 resolved installation. Pipeline/API
+pins were retained. Airflow metadata uses local SQLite in data/airflow, distinct
+from the monitoring database. The DAG is manual (schedule=None), catchup is false,
+and maximum active scheduled runs is one. This verifies local dags test execution,
+not an always-on deployment or multi-host executor.
+
+Executed verification:
+
+- Four worker tests passed, covering startup failure, receipt replay/configuration,
+  delivery retry, missing acknowledgement and failure verdict behavior.
+- Airflow structure checks passed for task dependencies, retry configuration and
+  shell parameter isolation.
+- Four real DAG scenarios passed against Spark and the PostgreSQL test database:
+  healthy → completed; repeat → reused; permanent missing source → two failed
+  attempts and failed DAG; source arriving after first failure → failed then
+  completed attempts and successful DAG. Exactly two data attempts were created.
+- Retained scenario logs/data: data/airflow-checks/4b0f01addbd748c185228aa583046288.
+  Driver log: .cache/b4-workflow-checks.log. These generated paths are ignored.
+- Additional development DAGs processed 20 healthy rows (20 valid) and a 20-row
+  incident batch (15 valid, 5 quarantined). Both published their measured events.
+
+Study [the orchestration guide](orchestration.md), then read the DAG, scripts/airflow.sh,
+scripts/orchestrate.sh and orchestration/worker.py in that order. A DAG describes
+prerequisites; a retry repeats a task attempt. Airflow's task try number, the
+pipeline execution UUID and the logical source batch ID serve different purposes.
+
+Exercise: explain why the final task depends directly on processing as well as
+publication. Then explain why retrying event publication does not rerun Spark.
+
+Known limits: tasks share one filesystem; abrupt kills can leave a running report
+or no event; receipts/events are retained without automatic cleanup. A6 manifests
+remain authoritative for data publication. Backfill date-to-input mapping and
+continuous scheduling need an explicit input-arrival policy. B5 follows next.

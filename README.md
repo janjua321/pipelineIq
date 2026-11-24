@@ -4,12 +4,13 @@ A local-first learning project for data pipeline observability and, eventually,
 evidence-grounded incident investigation. This README documents the runnable
 project; the local agent brief is intentionally excluded from version control.
 
-**Current scope: Milestone A and monitoring batches B1–B3 implemented.** Synthetic retail CSVs flow through raw Bronze
+**Current scope: Milestone A and monitoring batches B1–B4 implemented.** Synthetic retail CSVs flow through raw Bronze
 Delta tables into typed, validated Silver tables and quarantine with reason codes.
 The end-to-end runner adds Gold, persisted run metrics, safe reruns, and retry isolation.
 B1 translates those reports into validated, generic monitoring events without starting Spark.
 B2 persists events and named metrics in PostgreSQL. B3 adds a local FastAPI submission/query API.
-Airflow orchestration, history comparison, ML and AI follow later.
+B4 adds a local Airflow DAG with processing retries and failure publication.
+History comparison, ML and AI follow later.
 See [the monitoring contract](docs/monitoring-events.md) for B1's fields and semantics.
 See [the progress log](docs/PROGRESS.md) for actual verification results.
 
@@ -674,3 +675,27 @@ Verified on 2026-11-23: **146 tests passed** with real PostgreSQL and Spark enab
 There was one Starlette/HTTPX test-client deprecation warning. The database held
 three measured executions (healthy, incident, reused) over two processed batches.
 The [progress log](docs/PROGRESS.md) records the detailed learning notes and results.
+
+
+## Airflow orchestration (B4)
+
+Airflow runs in its own constrained environment and launches work in the existing
+pipeline environment. PostgreSQL must be running and migrated as described above.
+
+```bash
+bash scripts/setup-airflow.sh
+bash scripts/airflow.sh db migrate
+export PIPELINEIQ_DATABASE_URL="host=$PWD/.cache/postgres-socket port=55432 dbname=pipelineiq"
+bash scripts/airflow.sh dags test pipelineiq_retail \
+  --conf '{"source":"data/source/a2-healthy-001.csv","batch_id":"a2-healthy-001"}'
+```
+
+The manually triggered DAG processes the batch, publishes all attempt events, then
+verifies success. Processing retries once; event delivery retries twice. A failed
+processing task remains a failed DAG even if failure publication succeeds. A6
+protects batch outputs on retry; B2 protects events on duplicate delivery.
+
+See the [orchestration guide](docs/orchestration.md) for the task graph, retained
+artifacts, startup failures, environment choices, limitations and real DAG checks.
+Airflow metadata is local SQLite under ignored `data/airflow`; monitoring events
+remain in PostgreSQL. This local test workflow does not require a persistent scheduler.

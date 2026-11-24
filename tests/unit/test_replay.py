@@ -24,3 +24,12 @@ def test_failed_json_serialization_preserves_existing_report(tmp_path):
         save_json(path, {'value': float('nan')})
     assert json.loads(path.read_text()) == {'status': 'running'}
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_execution_reservation_cannot_overwrite_report(tmp_path):
+    path = tmp_path / "execution.json"
+    save_json(path, {"status": "running"}, exclusive=True)
+    with pytest.raises(FileExistsError):
+        save_json(path, {"status": "different"}, exclusive=True)
+    assert json.loads(path.read_text()) == {"status": "running"}
+    assert list(tmp_path.iterdir()) == [path]

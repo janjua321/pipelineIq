@@ -78,6 +78,19 @@ def test_failure_report_keeps_unknown_counts_null(spark, tmp_path):
     assert event["row_counts"]["input_count"] is None
 
 
+def test_caller_execution_id_and_collision_protection(spark, tmp_path):
+    from uuid import uuid4
+    execution_id = str(uuid4())
+    root = tmp_path / "pipeline"
+    with pytest.raises(FileNotFoundError):
+        run_pipeline(spark, tmp_path / "missing.csv", "missing", root, run_id=execution_id)
+    path = root / "metrics" / f"{execution_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="already has a report"):
+        run_pipeline(spark, tmp_path / "missing.csv", "missing", root, run_id=execution_id)
+    assert path.read_bytes() == before
+
+
 def test_partial_write_retry_reuse_and_conflict(spark, tmp_path, monkeypatch):
     from pathlib import Path
     from pyspark.sql.readwriter import DataFrameWriter
